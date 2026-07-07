@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field
 
 
 class IngestRequest(BaseModel):
-    path: str = Field(..., description="Path to a PDF/MD/TXT file to add to the knowledge base.")
+    path: str = Field(..., description="Server-side path to a PDF/MD/TXT file to add to Chroma.")
     doc_id: Optional[str] = Field(None, description="Optional explicit id; defaults to the filename.")
 
 
@@ -16,10 +16,13 @@ class IngestResponse(BaseModel):
 
 
 class Citation(BaseModel):
-    doc_id: str
-    chunk_id: int
-    text: str
-    score: float  # similarity (higher = closer); we convert Chroma distance -> similarity
+    doc_id: str = Field(..., description="Document identifier assigned at ingest time.")
+    chunk_id: int = Field(..., description="Zero-based chunk index inside the document.")
+    citation: str = Field(..., description="Stable source pointer in the form doc_id::chunk_id.")
+    text: str = Field(..., description="Retrieved source passage text.")
+    distance: float = Field(..., description="Raw Chroma distance; lower means closer.")
+    score: float = Field(..., description="Converted score: 1.0 - distance; higher means closer.")
+    score_kind: str = Field("cosine_similarity", description="Meaning of score for this collection.")
 
 
 class SearchResponse(BaseModel):

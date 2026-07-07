@@ -4,8 +4,8 @@ RAG core — Day 1-2 deliverable (working).
 Chunk documents, embed + store in Chroma, retrieve top-k with citations, and REFUSE when the
 best match is too weak. The refusal behavior is a deliberate rigor signal, not an afterthought.
 
-Uses Chroma's default embedding (all-MiniLM via sentence-transformers). Swap `embedding_function`
-for an API embedder later if you want; the interface is the same.
+Uses Chroma's default embedding function (ONNXMiniLM_L6_V2 in the tested local install).
+Swap `embedding_function` for an API embedder later if you want; the interface is the same.
 """
 from __future__ import annotations
 import os
@@ -17,10 +17,16 @@ from .models import Citation
 # --- config knobs ---
 CHUNK_CHARS = 1000          # ~200-250 tokens per chunk
 CHUNK_OVERLAP = 150
-REFUSE_SIMILARITY = 0.25    # if the best passage's similarity < this, refuse (tune on real data)
+DISTANCE_METRIC = "cosine"
+SCORE_KIND = "cosine_similarity"
+REFUSE_SCORE_THRESHOLD = 0.25  # if the best passage's score < this, refuse (tune on real data)
+REFUSE_SIMILARITY = REFUSE_SCORE_THRESHOLD  # backwards-compatible alias for early docs/tests
 
 _client = chromadb.PersistentClient(path=os.getenv("CHROMA_DIR", ".chroma"))
-_collection = _client.get_or_create_collection("docs")  # default embedding function
+_collection = _client.get_or_create_collection(
+    "docs",
+    metadata={"hnsw:space": DISTANCE_METRIC},
+)
 
 
 def _read(path: str) -> str:
@@ -58,10 +64,18 @@ def search(query: str, k: int = 4) -> tuple[list[Citation], bool, Optional[str]]
     metas = res["metadatas"][0] if res["metadatas"] else []
     dists = res["distances"][0] if res["distances"] else []
     passages = [
-        Citation(doc_id=m["doc_id"], chunk_id=m["chunk_id"], text=d, score=1.0 - dist)
+        Citation(
+            doc_id=m["doc_id"],
+            chunk_id=m["chunk_id"],
+            citation=f"{m['doc_id']}::{m['chunk_id']}",
+            text=d,
+            distance=dist,
+            score=1.0 - dist,
+            score_kind=SCORE_KIND,
+        )
         for d, m, dist in zip(docs, metas, dists)
     ]
-    if not passages or passages[0].score < REFUSE_SIMILARITY:
+    if not passages or passages[0].score < REFUSE_SCORE_THRESHOLD:
         return passages, True, "No sufficiently relevant passage found — refusing rather than guessing."
     return passages, False, None
 

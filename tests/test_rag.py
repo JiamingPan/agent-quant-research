@@ -44,7 +44,10 @@ def test_search_refuses_when_best_similarity_is_weak(monkeypatch):
 
     assert passages[0].doc_id == "doc"
     assert passages[0].chunk_id == 7
+    assert passages[0].citation == "doc::7"
+    assert passages[0].distance == pytest.approx(0.95)
     assert passages[0].score == pytest.approx(0.05)
+    assert passages[0].score_kind == "cosine_similarity"
     assert refused is True
     assert reason is not None
 
@@ -64,6 +67,9 @@ def test_search_returns_citations_when_similarity_is_strong(monkeypatch):
 
     assert passages[0].doc_id == "10k"
     assert passages[0].chunk_id == 3
+    assert passages[0].citation == "10k::3"
+    assert passages[0].distance == pytest.approx(0.10)
     assert passages[0].score == pytest.approx(0.90)
+    assert passages[0].score_kind == "cosine_similarity"
     assert refused is False
     assert reason is None

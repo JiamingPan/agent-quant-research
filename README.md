@@ -49,6 +49,41 @@ uvicorn app.main:app --reload
 # then: http://127.0.0.1:8000/docs
 ```
 
+## Local Smoke Test
+
+In Swagger, run `POST /ingest` with:
+
+```json
+{
+  "path": "/absolute/path/to/agent-quant-research/sample.txt",
+  "doc_id": "sample_apple"
+}
+```
+
+`path` is a server-side file path, so use the absolute path on the machine running Uvicorn.
+From the repo root, run `pwd` and append `/sample.txt`.
+
+Then run `GET /search` with:
+
+```text
+q = what did Apple say about services revenue?
+k = 4
+```
+
+The response should include a retrieved passage from `sample_apple::0`.
+
+## Retrieval Contract
+
+`/search` returns retrieved passages, not a generated answer. Each passage includes:
+
+- `citation`: source pointer in the form `doc_id::chunk_id`, such as `sample_apple::0`.
+- `distance`: raw Chroma distance; lower is closer.
+- `score`: `1.0 - distance`; higher is closer.
+- `score_kind`: currently `cosine_similarity`, because this collection is explicitly configured with Chroma's cosine HNSW space.
+
+The refusal rule is intentionally simple for the MVP: if the top passage score is below
+`REFUSE_SCORE_THRESHOLD = 0.25`, the API refuses rather than pretending it found evidence.
+
 ## Test
 
 ```bash
