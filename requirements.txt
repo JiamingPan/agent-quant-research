@@ -1,0 +1,11 @@
+fastapi>=0.110
+uvicorn[standard]>=0.29
+pydantic>=2.6
+chromadb>=0.5
+pypdf>=4.0
+numpy>=1.26
+pandas>=2.2
+pytest>=8.0
+# LLM API — pick one and set the key in your env (used later for the agent loop)
+# openai>=1.30
+# anthropic>=0.25
