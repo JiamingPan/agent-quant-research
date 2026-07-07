@@ -1,5 +1,7 @@
 # Agent Quant Research
 
+Citation-grounded RAG and eval infrastructure for financial research documents.
+
 A RAG + agent service over financial documents and price data that produces reproducible,
 leakage-checked research memos and event studies. **Not** live trading — no buy/sell claims.
 The point is rigorous, reproducible research *infrastructure*: every claim cites a retrieved
