@@ -86,6 +86,14 @@ The response should include a retrieved passage from `sample_apple::0`.
 The refusal rule is intentionally simple for the MVP: if the top passage score is below
 `REFUSE_SCORE_THRESHOLD = 0.25`, the API refuses rather than pretending it found evidence.
 
+## Price Data Tool
+
+`get_price_data(ticker, start, end)` is a thin tool wrapper. It first tries cached 1-minute
+bars from a local `spx-news-intraday` checkout, using `SPX_NEWS_INTRADAY_ROOT` if set or
+`~/spx-news-intraday` if present. If that loader is unavailable, it falls back to optional
+`yfinance` daily data. The returned payload is JSON-safe for the future agent loop:
+`ticker`, `start`, `end`, `source`, `n_rows`, `columns`, and `rows`.
+
 ## Test
 
 ```bash
@@ -94,7 +102,8 @@ python -m pytest -q
 
 ## Build status
 - [x] Day 1–2: FastAPI skeleton + `/ingest` + Chroma + `search_docs` (citations + refusal)
-- [ ] Day 3: `get_price_data` + `run_event_study` (bootstrap CI + leakage check)
+- [x] Day 3 foundation: `get_price_data` cache-first wrapper
+- [ ] Day 3 event study: `run_event_study` (bootstrap CI + leakage check)
 - [ ] Day 4: ReAct agent loop over the 3 tools + `/research`
 - [x] Day 5 foundation: eval metric helpers + RAG refusal/citation regression tests
 - [ ] Day 5 corpus eval: labeled query set + numbers above
