@@ -40,7 +40,8 @@ Eval harness: hit@k · MRR · grounding · tool success · refusal · leakage
 1. `search_docs` — RAG retrieval over ingested docs; returns passages **with citations**;
    refuses when evidence is weak.
 2. `get_price_data` — price/return series for a ticker over a window.
-3. `run_event_study` — abnormal returns around an event date + **bootstrap CI**, leakage-checked.
+3. `run_event_study` — abnormal returns around an event date + **pre-event HAC CI**,
+   leakage-checked.
 
 ## Run
 
@@ -103,10 +104,12 @@ an event date. The MVP baseline is intentionally simple and auditable:
 2. Convert prices to daily close-to-close returns.
 3. Fit expected return as the mean of returns with dates strictly before `event_date`.
 4. Report actual return minus expected return for dates in `[-window, +window]`.
-5. Return a deterministic bootstrap CI for mean abnormal return.
+5. Estimate the mean abnormal-return error from pre-event residuals using a
+   Newey-West/HAC-style long-run variance.
 
-The leakage check is the main point: the baseline return dates are returned in the payload,
-and tests assert that changing post-event prices does not change the baseline.
+The leakage check is the main point: the baseline and error-estimate return dates are returned
+in the payload, and tests assert that changing post-event prices does not change the baseline
+or the error scale.
 
 ## Test
 
@@ -117,7 +120,7 @@ and tests assert that changing post-event prices does not change the baseline.
 ## Build status
 - [x] Day 1–2: FastAPI skeleton + `/ingest` + Chroma + `search_docs` (citations + refusal)
 - [x] Day 3 foundation: `get_price_data` cache-first wrapper
-- [x] Day 3 event study: `run_event_study` (bootstrap CI + leakage check)
+- [x] Day 3 event study: `run_event_study` (pre-event HAC CI + leakage check)
 - [ ] Day 4: ReAct agent loop over the 3 tools + `/research`
 - [x] Day 5 foundation: eval metric helpers + RAG refusal/citation regression tests
 - [ ] Day 5 corpus eval: labeled query set + numbers above

@@ -3,7 +3,7 @@ The 3 agent tools. Exactly three — resist adding more.
 
 Day 1-2: search_docs is wired to the RAG core.
 Day 3: get_price_data is wired as a thin, JSON-safe adapter over cached bars.
-run_event_study remains the next increment.
+Day 3: run_event_study is leakage-checked with a pre-event-only error estimate.
 """
 from __future__ import annotations
 
@@ -20,7 +20,8 @@ from . import rag
 SPX_ROOT_ENV = "SPX_NEWS_INTRADAY_ROOT"
 BASELINE_LOOKBACK_DAYS = 30
 MIN_BASELINE_RETURNS = 2
-BOOTSTRAP_SAMPLES = 500
+MAX_HAC_LAG = 5
+HAC_Z_VALUE = 1.96
 
 
 def search_docs(query: str, k: int = 4) -> dict:
@@ -301,7 +302,12 @@ def run_event_study(ticker: str, event_date: str, window: int = 5) -> dict:
 
     event_rows = _event_window_rows(event_window, event_ts, expected_return_bps)
     abnormal_values = [row["abnormal_return_bps"] for row in event_rows]
-    ci = _bootstrap_mean_ci(abnormal_values)
+    mean_abnormal_return_bps = float(np.mean(abnormal_values))
+    ci = _pre_event_hac_mean_ci(
+        mean_abnormal_return_bps=mean_abnormal_return_bps,
+        baseline_returns_bps=baseline,
+        event_n=len(abnormal_values),
+    )
 
     return {
         "ticker": ticker,
@@ -321,9 +327,9 @@ def run_event_study(ticker: str, event_date: str, window: int = 5) -> dict:
         "event_window": event_rows,
         "summary": {
             "n_observations": len(event_rows),
-            "mean_abnormal_return_bps": _round_float(float(np.mean(abnormal_values))),
+            "mean_abnormal_return_bps": _round_float(mean_abnormal_return_bps),
             "cumulative_abnormal_return_bps": _round_float(float(np.sum(abnormal_values))),
-            "bootstrap_mean_abnormal_return_ci_bps": ci,
+            "pre_event_hac_mean_abnormal_return_ci_bps": ci,
         },
         "leakage_check": _leakage_check(event_ts, baseline.index),
         "reason": None,
@@ -369,18 +375,58 @@ def _event_window_rows(
     return rows
 
 
-def _bootstrap_mean_ci(values: list[float]) -> dict:
-    if not values:
-        return {"low": None, "high": None, "samples": 0}
-    arr = np.asarray(values, dtype=float)
-    rng = np.random.default_rng(0)
-    draws = rng.choice(arr, size=(BOOTSTRAP_SAMPLES, len(arr)), replace=True).mean(axis=1)
-    low, high = np.percentile(draws, [2.5, 97.5])
+def _pre_event_hac_mean_ci(
+    mean_abnormal_return_bps: float,
+    baseline_returns_bps: pd.Series,
+    event_n: int,
+) -> dict:
+    baseline = np.asarray(baseline_returns_bps.dropna(), dtype=float)
+    baseline_n = len(baseline)
+    if baseline_n < 2 or event_n < 1:
+        return {
+            "low": None,
+            "high": None,
+            "se": None,
+            "method": "pre_event_newey_west",
+            "z": HAC_Z_VALUE,
+            "lags": 0,
+            "baseline_n": int(baseline_n),
+            "event_n": int(event_n),
+            "long_run_variance": None,
+        }
+
+    residuals = baseline - float(np.mean(baseline))
+    lags = min(MAX_HAC_LAG, baseline_n - 1)
+    long_run_variance = _newey_west_long_run_variance(residuals, lags)
+    se = float(np.sqrt(long_run_variance * (1.0 / event_n + 1.0 / baseline_n)))
+    margin = HAC_Z_VALUE * se
     return {
-        "low": _round_float(float(low)),
-        "high": _round_float(float(high)),
-        "samples": BOOTSTRAP_SAMPLES,
+        "low": _round_float(mean_abnormal_return_bps - margin),
+        "high": _round_float(mean_abnormal_return_bps + margin),
+        "se": _round_float(se),
+        "method": "pre_event_newey_west",
+        "z": HAC_Z_VALUE,
+        "lags": int(lags),
+        "baseline_n": int(baseline_n),
+        "event_n": int(event_n),
+        "long_run_variance": _round_float(long_run_variance),
     }
+
+
+def _newey_west_long_run_variance(residuals: np.ndarray, lags: int) -> float:
+    arr = np.asarray(residuals, dtype=float)
+    arr = arr[~np.isnan(arr)]
+    n = len(arr)
+    if n == 0:
+        return 0.0
+
+    lags = max(0, min(int(lags), n - 1))
+    variance = float(np.dot(arr, arr) / n)
+    for lag in range(1, lags + 1):
+        weight = 1.0 - lag / (lags + 1)
+        autocovariance = float(np.dot(arr[lag:], arr[:-lag]) / n)
+        variance += 2.0 * weight * autocovariance
+    return max(variance, 0.0)
 
 
 def _leakage_check(event_ts: pd.Timestamp, baseline_index: pd.DatetimeIndex) -> dict:
@@ -388,8 +434,10 @@ def _leakage_check(event_ts: pd.Timestamp, baseline_index: pd.DatetimeIndex) -> 
     uses_only_pre_event = all(idx < event_ts for idx in baseline_index)
     return {
         "baseline_uses_only_pre_event_data": bool(uses_only_pre_event),
+        "error_estimate_uses_only_pre_event_data": bool(uses_only_pre_event),
         "event_date": event_ts.date().isoformat(),
         "baseline_return_dates": dates,
+        "error_estimate_return_dates": dates,
         "max_baseline_date": dates[-1] if dates else None,
     }
 
