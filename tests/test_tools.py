@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import numpy as np
 import pytest
 import pandas as pd
 from fastapi.testclient import TestClient
@@ -68,6 +69,29 @@ def test_get_price_data_returns_unavailable_when_sources_fail(monkeypatch):
     assert "no price data" in out["reason"].lower()
 
 
+def test_run_event_study_uses_log_returns_in_basis_points(monkeypatch):
+    def fake_prices(ticker: str, start: str, end: str) -> dict:
+        return _price_payload(
+            ticker,
+            [
+                ("2026-01-01T21:00:00+00:00", 100.0),
+                ("2026-01-02T21:00:00+00:00", 110.0),
+                ("2026-01-03T21:00:00+00:00", 121.0),
+                ("2026-01-04T21:00:00+00:00", 133.1),
+            ],
+        )
+
+    monkeypatch.setattr(tools, "get_price_data", fake_prices)
+
+    out = tools.run_event_study("SPY", "2026-01-04", window=0)
+
+    expected_log_bps = np.log(1.10) * 1e4
+    assert out["available"] is True
+    assert out["baseline"]["return_type"] == "log"
+    assert out["baseline"]["expected_return_bps"] == pytest.approx(expected_log_bps)
+    assert out["event_window"][0]["actual_return_bps"] == pytest.approx(expected_log_bps)
+
+
 def test_run_event_study_fits_baseline_only_before_event(monkeypatch):
     def fake_prices(ticker: str, start: str, end: str) -> dict:
         return _price_payload(
@@ -89,12 +113,17 @@ def test_run_event_study_fits_baseline_only_before_event(monkeypatch):
     assert out["baseline"]["n_returns"] == 2
     assert out["baseline"]["return_dates"] == ["2026-01-02", "2026-01-03"]
     assert out["baseline"]["end"] == "2026-01-03"
-    assert out["baseline"]["expected_return_bps"] == pytest.approx(100.0)
+    assert out["baseline"]["return_type"] == "log"
+    expected_return_bps = np.log(1.01) * 1e4
+    actual_event_return_bps = np.log(1.5) * 1e4
+    assert out["baseline"]["expected_return_bps"] == pytest.approx(expected_return_bps)
     assert out["leakage_check"]["baseline_uses_only_pre_event_data"] is True
     event_row = next(row for row in out["event_window"] if row["relative_day"] == 0)
     assert event_row["date"] == "2026-01-04"
-    assert event_row["actual_return_bps"] == pytest.approx(5000.0)
-    assert event_row["abnormal_return_bps"] == pytest.approx(4900.0)
+    assert event_row["actual_return_bps"] == pytest.approx(actual_event_return_bps)
+    assert event_row["abnormal_return_bps"] == pytest.approx(
+        actual_event_return_bps - expected_return_bps
+    )
 
 
 def test_run_event_study_baseline_is_invariant_to_post_event_prices(monkeypatch):

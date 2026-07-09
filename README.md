@@ -40,7 +40,7 @@ Eval harness: hit@k · MRR · grounding · tool success · refusal · leakage
 1. `search_docs` — RAG retrieval over ingested docs; returns passages **with citations**;
    refuses when evidence is weak.
 2. `get_price_data` — price/return series for a ticker over a window.
-3. `run_event_study` — abnormal returns around an event date + **pre-event HAC CI**,
+3. `run_event_study` — log abnormal returns around an event date + **pre-event HAC CI**,
    leakage-checked.
 
 ## Run
@@ -97,13 +97,13 @@ bars from a local `spx-news-intraday` checkout, using `SPX_NEWS_INTRADAY_ROOT` i
 
 ## Event Study Tool
 
-`run_event_study(ticker, event_date, window)` computes close-to-close abnormal returns around
-an event date. The MVP baseline is intentionally simple and auditable:
+`run_event_study(ticker, event_date, window)` computes close-to-close log abnormal returns
+around an event date. The MVP baseline is intentionally simple and auditable:
 
 1. Load prices around the event.
-2. Convert prices to daily close-to-close returns.
-3. Fit expected return as the mean of returns with dates strictly before `event_date`.
-4. Report actual return minus expected return for dates in `[-window, +window]`.
+2. Convert prices to daily close-to-close log returns in basis points.
+3. Fit expected log return as the mean of log returns with dates strictly before `event_date`.
+4. Report actual log return minus expected log return for dates in `[-window, +window]`.
 5. Estimate the mean abnormal-return error from pre-event residuals using a
    Newey-West/HAC-style long-run variance.
 

@@ -243,10 +243,10 @@ def _frame_to_records(
 
 def run_event_study(ticker: str, event_date: str, window: int = 5) -> dict:
     """
-    Compute close-to-close abnormal returns around an event date.
+    Compute close-to-close log abnormal returns around an event date.
 
     The expected-return baseline is intentionally simple for the MVP: mean
-    close-to-close return estimated only from dates strictly before event_date.
+    close-to-close log return estimated only from dates strictly before event_date.
     """
     if window < 0:
         raise ValueError("window must be non-negative")
@@ -316,7 +316,8 @@ def run_event_study(ticker: str, event_date: str, window: int = 5) -> dict:
         "available": True,
         "price_source": prices.get("source"),
         "baseline": {
-            "model": "mean_close_to_close_return",
+            "model": "mean_close_to_close_log_return",
+            "return_type": "log",
             "lookback_days": BASELINE_LOOKBACK_DAYS,
             "start": baseline.index.min().date().isoformat(),
             "end": baseline.index.max().date().isoformat(),
@@ -349,7 +350,7 @@ def _daily_close_returns(rows: list[dict]) -> pd.DataFrame:
         return pd.DataFrame()
     frame["date"] = frame["ts"].dt.normalize()
     daily = frame.groupby("date", sort=True)["close"].last().to_frame()
-    daily["return_bps"] = daily["close"].pct_change() * 1e4
+    daily["return_bps"] = np.log(daily["close"] / daily["close"].shift(1)) * 1e4
     return daily
 
 
@@ -459,7 +460,8 @@ def _event_study_unavailable(
         "window": window,
         "available": False,
         "baseline": {
-            "model": "mean_close_to_close_return",
+            "model": "mean_close_to_close_log_return",
+            "return_type": "log",
             "lookback_days": BASELINE_LOOKBACK_DAYS,
             "n_returns": len(baseline_dates),
             "return_dates": baseline_dates,
