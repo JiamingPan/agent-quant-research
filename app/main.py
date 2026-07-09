@@ -1,6 +1,6 @@
 """
-FastAPI surface. Day 1-2: /ingest, /search (search_docs), /documents are live.
-/research (agent) and /event-study land on Days 3-4 — they return 501 for now.
+FastAPI surface. /ingest, /search, /documents, and /event-study are live.
+/research (agent) lands on Day 4 — it returns 501 for now.
 """
 from __future__ import annotations
 from fastapi import FastAPI, HTTPException
@@ -52,4 +52,4 @@ def research(req: ResearchRequest):
 
 @app.post("/event-study")
 def event_study(req: EventStudyRequest):
-    raise HTTPException(501, "event study not implemented yet (Day 3)")
+    return tools.run_event_study(req.ticker, req.event_date, req.window)
