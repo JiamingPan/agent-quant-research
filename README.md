@@ -115,6 +115,9 @@ The leakage check is the main point: an explicit assertion rejects any baseline 
 after the event-window start. The response returns the baseline and bootstrap source dates,
 `n_pre_obs`, and a `passed`/`failed` leakage status.
 
+For the interview explanation and 10-minute self-quiz, see
+[EVENT_STUDY_INTERVIEW.md](EVENT_STUDY_INTERVIEW.md).
+
 ## Test
 
 ```bash
