@@ -19,7 +19,7 @@ backtests, runbooks, live execution, broker automation, and proprietary data.
 | citation-grounding rate | does every claim trace to a retrieved passage? | metric helper tested |
 | tool-call success rate | agent picks + calls the right tool | metric helper tested |
 | refusal-when-weak | refuses when evidence is insufficient | RAG behavior tested |
-| leakage check | event study uses no look-ahead data | pre-event baseline tested |
+| leakage check | event study uses no look-ahead data | pre-window assertion tested |
 
 > "I built a RAG agent" is weak. "I built a RAG agent and characterized its citation-grounding
 > and retrieval quality on N queries, with a leakage-checked event-study tool" is the claim.
@@ -40,8 +40,8 @@ Eval harness: hit@k · MRR · grounding · tool success · refusal · leakage
 1. `search_docs` — RAG retrieval over ingested docs; returns passages **with citations**;
    refuses when evidence is weak.
 2. `get_price_data` — price/return series for a ticker over a window.
-3. `run_event_study` — log abnormal returns around an event date + **pre-event HAC CI**,
-   leakage-checked.
+3. `run_event_study` — log abnormal returns and CAR around an event date + a
+   **pre-event bootstrap CI**, leakage-checked.
 
 ## Run
 
@@ -94,6 +94,8 @@ bars from a local `spx-news-intraday` checkout, using `SPX_NEWS_INTRADAY_ROOT` i
 `~/spx-news-intraday` if present. If that loader is unavailable, it falls back to optional
 `yfinance` daily data. The returned payload is JSON-safe for the future agent loop:
 `ticker`, `start`, `end`, `source`, `n_rows`, `columns`, and `rows`.
+Public tool calls retain at most 2,000 rows; the event-study implementation requests the
+full internal range so minute-bar truncation cannot discard its baseline or event window.
 
 ## Event Study Tool
 
@@ -102,14 +104,16 @@ around an event date. The MVP baseline is intentionally simple and auditable:
 
 1. Load prices around the event.
 2. Convert prices to daily close-to-close log returns in basis points.
-3. Fit expected log return as the mean of log returns with dates strictly before `event_date`.
-4. Report actual log return minus expected log return for dates in `[-window, +window]`.
-5. Estimate the mean abnormal-return error from pre-event residuals using a
-   Newey-West/HAC-style long-run variance.
+3. Locate `[-window, +window]` by trading observations, then fit expected log return as
+   the mean of returns strictly before the first observation in that window.
+4. Report abnormal return (`AR = actual - expected`) and cumulative abnormal return
+   (`CAR = cumsum(AR)`) for those trading observations.
+5. Build a 95% percentile interval around CAR from 1,000 resamples of centered
+   pre-event returns.
 
-The leakage check is the main point: the baseline and error-estimate return dates are returned
-in the payload, and tests assert that changing post-event prices does not change the baseline
-or the error scale.
+The leakage check is the main point: an explicit assertion rejects any baseline date on or
+after the event-window start. The response returns the baseline and bootstrap source dates,
+`n_pre_obs`, and a `passed`/`failed` leakage status.
 
 ## Test
 
@@ -120,7 +124,7 @@ or the error scale.
 ## Build status
 - [x] Day 1–2: FastAPI skeleton + `/ingest` + Chroma + `search_docs` (citations + refusal)
 - [x] Day 3 foundation: `get_price_data` cache-first wrapper
-- [x] Day 3 event study: `run_event_study` (pre-event HAC CI + leakage check)
+- [x] Day 3 event study: `run_event_study` (pre-event bootstrap CAR CI + leakage check)
 - [ ] Day 4: ReAct agent loop over the 3 tools + `/research`
 - [x] Day 5 foundation: eval metric helpers + RAG refusal/citation regression tests
 - [ ] Day 5 corpus eval: labeled query set + numbers above

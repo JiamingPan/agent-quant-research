@@ -3,7 +3,7 @@ The 3 agent tools. Exactly three — resist adding more.
 
 Day 1-2: search_docs is wired to the RAG core.
 Day 3: get_price_data is wired as a thin, JSON-safe adapter over cached bars.
-Day 3: run_event_study is leakage-checked with a pre-event-only error estimate.
+Day 3: run_event_study is leakage-checked with a pre-window bootstrap CI.
 """
 from __future__ import annotations
 
@@ -20,8 +20,9 @@ from . import rag
 SPX_ROOT_ENV = "SPX_NEWS_INTRADAY_ROOT"
 BASELINE_LOOKBACK_DAYS = 30
 MIN_BASELINE_RETURNS = 2
-MAX_HAC_LAG = 5
-HAC_Z_VALUE = 1.96
+BOOTSTRAP_SAMPLES = 1000
+BOOTSTRAP_SEED = 0
+EVENT_FETCH_BUFFER_DAYS = 7
 
 
 def search_docs(query: str, k: int = 4) -> dict:
@@ -34,7 +35,13 @@ def search_docs(query: str, k: int = 4) -> dict:
     }
 
 
-def get_price_data(ticker: str, start: str, end: str) -> dict:
+def get_price_data(
+    ticker: str,
+    start: str,
+    end: str,
+    *,
+    max_rows: Optional[int] = 2000,
+) -> dict:
     """
     Return a price series for `ticker` in [start, end].
 
@@ -84,7 +91,7 @@ def get_price_data(ticker: str, start: str, end: str) -> dict:
             "reason": "No price data in requested range.",
         }
 
-    rows, truncated = _frame_to_records(frame)
+    rows, truncated = _frame_to_records(frame, max_rows=max_rows)
     return {
         "ticker": ticker,
         "start": start,
@@ -223,10 +230,10 @@ def _normalize_bars(frame: pd.DataFrame) -> pd.DataFrame:
 
 def _frame_to_records(
     frame: pd.DataFrame,
-    max_rows: int = 2000,
+    max_rows: Optional[int] = 2000,
 ) -> tuple[list[dict], bool]:
-    truncated = len(frame) > max_rows
-    limited = frame.iloc[:max_rows]
+    truncated = max_rows is not None and len(frame) > max_rows
+    limited = frame if max_rows is None else frame.iloc[:max_rows]
     rows: list[dict] = []
     for ts, row in limited.iterrows():
         record = {"ts": ts.isoformat()}
@@ -245,17 +252,20 @@ def run_event_study(ticker: str, event_date: str, window: int = 5) -> dict:
     """
     Compute close-to-close log abnormal returns around an event date.
 
-    The expected-return baseline is intentionally simple for the MVP: mean
-    close-to-close log return estimated only from dates strictly before event_date.
+    The expected-return baseline is the mean close-to-close log return from
+    dates strictly before the event window starts.
     """
     if window < 0:
         raise ValueError("window must be non-negative")
 
     ticker = ticker.upper()
-    event_ts = pd.Timestamp(event_date).tz_localize("UTC").normalize()
+    event_ts = _parse_bound(event_date, is_end=False).normalize()
+    baseline_cutoff = event_ts - pd.Timedelta(days=window)
     fetch_start = (event_ts - pd.Timedelta(days=BASELINE_LOOKBACK_DAYS)).date().isoformat()
-    fetch_end = (event_ts + pd.Timedelta(days=window)).date().isoformat()
-    prices = get_price_data(ticker, fetch_start, fetch_end)
+    fetch_end = (
+        event_ts + pd.Timedelta(days=2 * window + EVENT_FETCH_BUFFER_DAYS)
+    ).date().isoformat()
+    prices = get_price_data(ticker, fetch_start, fetch_end, max_rows=None)
     if not prices.get("available"):
         return _event_study_unavailable(
             ticker,
@@ -263,6 +273,7 @@ def run_event_study(ticker: str, event_date: str, window: int = 5) -> dict:
             window,
             prices.get("reason") or "price data unavailable",
             baseline_dates=[],
+            baseline_cutoff=baseline_cutoff,
         )
 
     daily = _daily_close_returns(prices.get("rows", []))
@@ -273,38 +284,69 @@ def run_event_study(ticker: str, event_date: str, window: int = 5) -> dict:
             window,
             "price data has no daily close returns",
             baseline_dates=[],
+            baseline_cutoff=baseline_cutoff,
         )
 
-    baseline = daily.loc[daily.index < event_ts, "return_bps"].dropna()
+    if event_ts not in daily.index:
+        return _event_study_unavailable(
+            ticker,
+            event_date,
+            window,
+            "Event date has no daily close observation.",
+            baseline_dates=[],
+            baseline_cutoff=baseline_cutoff,
+        )
+
+    event_position = int(daily.index.get_loc(event_ts))
+    window_start_position = event_position - window
+    window_end_position = event_position + window
+    if window_start_position < 0 or window_end_position >= len(daily):
+        return _event_study_unavailable(
+            ticker,
+            event_date,
+            window,
+            f"Need {window} trading observations on each side of the event date.",
+            baseline_dates=[],
+            baseline_cutoff=baseline_cutoff,
+        )
+
+    baseline_cutoff = daily.index[window_start_position]
+    baseline = daily.iloc[:window_start_position]["return_bps"].dropna()
+    _assert_no_baseline_leakage(baseline.index, baseline_cutoff)
     baseline_dates = [idx.date().isoformat() for idx in baseline.index]
     if len(baseline) < MIN_BASELINE_RETURNS:
         return _event_study_unavailable(
             ticker,
             event_date,
             window,
-            f"Need at least {MIN_BASELINE_RETURNS} pre-event returns for baseline.",
+            f"Need at least {MIN_BASELINE_RETURNS} pre-event returns before "
+            f"{baseline_cutoff.date().isoformat()} for baseline.",
             baseline_dates=baseline_dates,
+            baseline_cutoff=baseline_cutoff,
         )
 
     expected_return_bps = float(baseline.mean())
-    win_start = event_ts - pd.Timedelta(days=window)
-    win_end = event_ts + pd.Timedelta(days=window)
-    event_window = daily.loc[(daily.index >= win_start) & (daily.index <= win_end)].copy()
+    event_window = daily.iloc[window_start_position : window_end_position + 1].copy()
     event_window = event_window.dropna(axis=0, subset=["return_bps"])
-    if event_window.empty:
+    if len(event_window) != 2 * window + 1:
         return _event_study_unavailable(
             ticker,
             event_date,
             window,
-            "No return observations in event window.",
+            "Event window has missing daily return observations.",
             baseline_dates=baseline_dates,
+            baseline_cutoff=baseline_cutoff,
         )
 
-    event_rows = _event_window_rows(event_window, event_ts, expected_return_bps)
-    abnormal_values = [row["abnormal_return_bps"] for row in event_rows]
+    event_window["relative_day"] = np.arange(-window, window + 1)
+    event_rows = _event_window_rows(event_window, expected_return_bps)
+    abnormal_values = (
+        event_window["return_bps"].to_numpy(dtype=float) - expected_return_bps
+    )
     mean_abnormal_return_bps = float(np.mean(abnormal_values))
-    ci = _pre_event_hac_mean_ci(
-        mean_abnormal_return_bps=mean_abnormal_return_bps,
+    car_bps = float(np.sum(abnormal_values))
+    ci = _bootstrap_car_ci(
+        car_bps=car_bps,
         baseline_returns_bps=baseline,
         event_n=len(abnormal_values),
     )
@@ -315,10 +357,12 @@ def run_event_study(ticker: str, event_date: str, window: int = 5) -> dict:
         "window": window,
         "available": True,
         "price_source": prices.get("source"),
+        "n_pre_obs": int(len(baseline)),
         "baseline": {
             "model": "mean_close_to_close_log_return",
             "return_type": "log",
             "lookback_days": BASELINE_LOOKBACK_DAYS,
+            "cutoff_date": baseline_cutoff.date().isoformat(),
             "start": baseline.index.min().date().isoformat(),
             "end": baseline.index.max().date().isoformat(),
             "n_returns": int(len(baseline)),
@@ -328,11 +372,13 @@ def run_event_study(ticker: str, event_date: str, window: int = 5) -> dict:
         "event_window": event_rows,
         "summary": {
             "n_observations": len(event_rows),
+            "n_pre_obs": int(len(baseline)),
             "mean_abnormal_return_bps": _round_float(mean_abnormal_return_bps),
-            "cumulative_abnormal_return_bps": _round_float(float(np.sum(abnormal_values))),
-            "pre_event_hac_mean_abnormal_return_ci_bps": ci,
+            "car_bps": _round_float(car_bps),
+            "cumulative_abnormal_return_bps": _round_float(car_bps),
+            "bootstrap_car_ci_bps": ci,
         },
-        "leakage_check": _leakage_check(event_ts, baseline.index),
+        "leakage_check": _leakage_check(event_ts, baseline_cutoff, baseline.index),
         "reason": None,
     }
 
@@ -356,88 +402,96 @@ def _daily_close_returns(rows: list[dict]) -> pd.DataFrame:
 
 def _event_window_rows(
     event_window: pd.DataFrame,
-    event_ts: pd.Timestamp,
     expected_return_bps: float,
 ) -> list[dict]:
     rows: list[dict] = []
+    car_bps = 0.0
     for idx, row in event_window.iterrows():
         actual_return_bps = float(row["return_bps"])
         abnormal_return_bps = actual_return_bps - expected_return_bps
+        car_bps += abnormal_return_bps
         rows.append(
             {
                 "date": idx.date().isoformat(),
-                "relative_day": int((idx - event_ts).days),
+                "relative_day": int(row["relative_day"]),
                 "close": _round_float(float(row["close"])),
                 "actual_return_bps": _round_float(actual_return_bps),
                 "expected_return_bps": _round_float(expected_return_bps),
+                "ar_bps": _round_float(abnormal_return_bps),
                 "abnormal_return_bps": _round_float(abnormal_return_bps),
+                "car_bps": _round_float(car_bps),
             }
         )
     return rows
 
 
-def _pre_event_hac_mean_ci(
-    mean_abnormal_return_bps: float,
+def _bootstrap_car_ci(
+    car_bps: float,
     baseline_returns_bps: pd.Series,
     event_n: int,
 ) -> dict:
     baseline = np.asarray(baseline_returns_bps.dropna(), dtype=float)
-    baseline_n = len(baseline)
-    if baseline_n < 2 or event_n < 1:
+    n_pre_obs = len(baseline)
+    if n_pre_obs < MIN_BASELINE_RETURNS or event_n < 1:
         return {
             "low": None,
             "high": None,
-            "se": None,
-            "method": "pre_event_newey_west",
-            "z": HAC_Z_VALUE,
-            "lags": 0,
-            "baseline_n": int(baseline_n),
+            "method": "pre_event_residual_percentile",
+            "samples": BOOTSTRAP_SAMPLES,
+            "seed": BOOTSTRAP_SEED,
+            "n_pre_obs": int(n_pre_obs),
             "event_n": int(event_n),
-            "long_run_variance": None,
         }
 
-    residuals = baseline - float(np.mean(baseline))
-    lags = min(MAX_HAC_LAG, baseline_n - 1)
-    long_run_variance = _newey_west_long_run_variance(residuals, lags)
-    se = float(np.sqrt(long_run_variance * (1.0 / event_n + 1.0 / baseline_n)))
-    margin = HAC_Z_VALUE * se
+    centered_pre_event_returns = baseline - float(np.mean(baseline))
+    rng = np.random.default_rng(BOOTSTRAP_SEED)
+    sampled_residuals = rng.choice(
+        centered_pre_event_returns,
+        size=(BOOTSTRAP_SAMPLES, event_n),
+        replace=True,
+    )
+    bootstrap_cars = car_bps + sampled_residuals.sum(axis=1)
+    low, high = np.percentile(bootstrap_cars, [2.5, 97.5])
     return {
-        "low": _round_float(mean_abnormal_return_bps - margin),
-        "high": _round_float(mean_abnormal_return_bps + margin),
-        "se": _round_float(se),
-        "method": "pre_event_newey_west",
-        "z": HAC_Z_VALUE,
-        "lags": int(lags),
-        "baseline_n": int(baseline_n),
+        "low": _round_float(low),
+        "high": _round_float(high),
+        "method": "pre_event_residual_percentile",
+        "samples": BOOTSTRAP_SAMPLES,
+        "seed": BOOTSTRAP_SEED,
+        "n_pre_obs": int(n_pre_obs),
         "event_n": int(event_n),
-        "long_run_variance": _round_float(long_run_variance),
     }
 
 
-def _newey_west_long_run_variance(residuals: np.ndarray, lags: int) -> float:
-    arr = np.asarray(residuals, dtype=float)
-    arr = arr[~np.isnan(arr)]
-    n = len(arr)
-    if n == 0:
-        return 0.0
-
-    lags = max(0, min(int(lags), n - 1))
-    variance = float(np.dot(arr, arr) / n)
-    for lag in range(1, lags + 1):
-        weight = 1.0 - lag / (lags + 1)
-        autocovariance = float(np.dot(arr[lag:], arr[:-lag]) / n)
-        variance += 2.0 * weight * autocovariance
-    return max(variance, 0.0)
+def _assert_no_baseline_leakage(
+    baseline_index: pd.DatetimeIndex,
+    baseline_cutoff: pd.Timestamp,
+) -> None:
+    leaking_dates = baseline_index[baseline_index >= baseline_cutoff]
+    assert len(leaking_dates) == 0, (
+        "Baseline leakage: return dates must be strictly before "
+        f"{baseline_cutoff.date().isoformat()}; got "
+        f"{[idx.date().isoformat() for idx in leaking_dates]}"
+    )
 
 
-def _leakage_check(event_ts: pd.Timestamp, baseline_index: pd.DatetimeIndex) -> dict:
+def _leakage_check(
+    event_ts: pd.Timestamp,
+    baseline_cutoff: pd.Timestamp,
+    baseline_index: pd.DatetimeIndex,
+) -> dict:
     dates = [idx.date().isoformat() for idx in baseline_index]
-    uses_only_pre_event = all(idx < event_ts for idx in baseline_index)
+    uses_only_pre_window = all(idx < baseline_cutoff for idx in baseline_index)
     return {
-        "baseline_uses_only_pre_event_data": bool(uses_only_pre_event),
-        "error_estimate_uses_only_pre_event_data": bool(uses_only_pre_event),
+        "status": "passed" if uses_only_pre_window else "failed",
+        "baseline_uses_only_pre_window_data": bool(uses_only_pre_window),
+        "bootstrap_uses_only_pre_window_data": bool(uses_only_pre_window),
+        "baseline_uses_only_pre_event_data": bool(uses_only_pre_window),
         "event_date": event_ts.date().isoformat(),
+        "baseline_cutoff_date": baseline_cutoff.date().isoformat(),
         "baseline_return_dates": dates,
+        "bootstrap_return_dates": dates,
+        "error_estimate_uses_only_pre_event_data": bool(uses_only_pre_window),
         "error_estimate_return_dates": dates,
         "max_baseline_date": dates[-1] if dates else None,
     }
@@ -449,26 +503,30 @@ def _event_study_unavailable(
     window: int,
     reason: str,
     baseline_dates: list[str],
+    baseline_cutoff: pd.Timestamp,
 ) -> dict:
-    event_ts = pd.Timestamp(event_date).tz_localize("UTC").normalize()
+    event_ts = _parse_bound(event_date, is_end=False).normalize()
     baseline_index = pd.DatetimeIndex(
         [pd.Timestamp(date).tz_localize("UTC") for date in baseline_dates]
     )
+    _assert_no_baseline_leakage(baseline_index, baseline_cutoff)
     return {
         "ticker": ticker.upper(),
         "event_date": event_date,
         "window": window,
         "available": False,
+        "n_pre_obs": len(baseline_dates),
         "baseline": {
             "model": "mean_close_to_close_log_return",
             "return_type": "log",
             "lookback_days": BASELINE_LOOKBACK_DAYS,
+            "cutoff_date": baseline_cutoff.date().isoformat(),
             "n_returns": len(baseline_dates),
             "return_dates": baseline_dates,
         },
         "event_window": [],
         "summary": {},
-        "leakage_check": _leakage_check(event_ts, baseline_index),
+        "leakage_check": _leakage_check(event_ts, baseline_cutoff, baseline_index),
         "reason": reason,
     }
 

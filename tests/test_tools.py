@@ -69,178 +69,154 @@ def test_get_price_data_returns_unavailable_when_sources_fail(monkeypatch):
     assert "no price data" in out["reason"].lower()
 
 
-def test_run_event_study_uses_log_returns_in_basis_points(monkeypatch):
-    def fake_prices(ticker: str, start: str, end: str) -> dict:
-        return _price_payload(
-            ticker,
-            [
-                ("2026-01-01T21:00:00+00:00", 100.0),
-                ("2026-01-02T21:00:00+00:00", 110.0),
-                ("2026-01-03T21:00:00+00:00", 121.0),
-                ("2026-01-04T21:00:00+00:00", 133.1),
-            ],
-        )
+def test_get_price_data_can_return_all_rows_for_internal_consumers(monkeypatch):
+    idx = pd.date_range("2026-01-02T09:30:00Z", periods=2501, freq="min")
+    bars = pd.DataFrame({"close": np.linspace(100.0, 110.0, len(idx))}, index=idx)
 
-    monkeypatch.setattr(tools, "get_price_data", fake_prices)
+    def fake_range_loader(
+        ticker: str,
+        start: pd.Timestamp,
+        end: pd.Timestamp,
+    ) -> pd.DataFrame:
+        return bars
 
-    out = tools.run_event_study("SPY", "2026-01-04", window=0)
+    monkeypatch.setattr(tools, "_load_range_from_private_loader", fake_range_loader)
 
-    expected_log_bps = np.log(1.10) * 1e4
-    assert out["available"] is True
-    assert out["baseline"]["return_type"] == "log"
-    assert out["baseline"]["expected_return_bps"] == pytest.approx(expected_log_bps)
-    assert out["event_window"][0]["actual_return_bps"] == pytest.approx(expected_log_bps)
-
-
-def test_run_event_study_fits_baseline_only_before_event(monkeypatch):
-    def fake_prices(ticker: str, start: str, end: str) -> dict:
-        return _price_payload(
-            ticker,
-            [
-                ("2026-01-01T21:00:00+00:00", 100.0),
-                ("2026-01-02T21:00:00+00:00", 101.0),
-                ("2026-01-03T21:00:00+00:00", 102.01),
-                ("2026-01-04T21:00:00+00:00", 153.015),
-                ("2026-01-05T21:00:00+00:00", 229.5225),
-            ],
-        )
-
-    monkeypatch.setattr(tools, "get_price_data", fake_prices)
-
-    out = tools.run_event_study("SPY", "2026-01-04", window=1)
-
-    assert out["available"] is True
-    assert out["baseline"]["n_returns"] == 2
-    assert out["baseline"]["return_dates"] == ["2026-01-02", "2026-01-03"]
-    assert out["baseline"]["end"] == "2026-01-03"
-    assert out["baseline"]["return_type"] == "log"
-    expected_return_bps = np.log(1.01) * 1e4
-    actual_event_return_bps = np.log(1.5) * 1e4
-    assert out["baseline"]["expected_return_bps"] == pytest.approx(expected_return_bps)
-    assert out["leakage_check"]["baseline_uses_only_pre_event_data"] is True
-    event_row = next(row for row in out["event_window"] if row["relative_day"] == 0)
-    assert event_row["date"] == "2026-01-04"
-    assert event_row["actual_return_bps"] == pytest.approx(actual_event_return_bps)
-    assert event_row["abnormal_return_bps"] == pytest.approx(
-        actual_event_return_bps - expected_return_bps
+    out = tools.get_price_data(
+        "SPY",
+        "2026-01-02T09:30:00Z",
+        "2026-01-04T03:10:00Z",
+        max_rows=None,
     )
 
-
-def test_run_event_study_baseline_is_invariant_to_post_event_prices(monkeypatch):
-    def fake_prices_with_post_close(post_close: float):
-        def fake_prices(ticker: str, start: str, end: str) -> dict:
-            return _price_payload(
-                ticker,
-                [
-                    ("2026-01-01T21:00:00+00:00", 100.0),
-                    ("2026-01-02T21:00:00+00:00", 101.0),
-                    ("2026-01-03T21:00:00+00:00", 102.01),
-                    ("2026-01-04T21:00:00+00:00", 153.015),
-                    ("2026-01-05T21:00:00+00:00", post_close),
-                ],
-            )
-
-        return fake_prices
-
-    monkeypatch.setattr(tools, "get_price_data", fake_prices_with_post_close(200.0))
-    baseline_a = tools.run_event_study("SPY", "2026-01-04", window=1)["baseline"]
-
-    monkeypatch.setattr(tools, "get_price_data", fake_prices_with_post_close(1000.0))
-    baseline_b = tools.run_event_study("SPY", "2026-01-04", window=1)["baseline"]
-
-    assert baseline_a == baseline_b
+    assert out["available"] is True
+    assert out["n_rows"] == 2501
+    assert len(out["rows"]) == 2501
+    assert out["truncated"] is False
 
 
-def test_run_event_study_reports_pre_event_hac_error_estimate(monkeypatch):
-    def fake_prices(ticker: str, start: str, end: str) -> dict:
+def test_run_event_study_returns_log_ar_car_and_bootstrap_ci(monkeypatch):
+    def fake_prices(
+        ticker: str,
+        start: str,
+        end: str,
+        *,
+        max_rows: int | None = 2000,
+    ) -> dict:
+        assert max_rows is None
         return _price_payload(
             ticker,
             [
-                ("2026-01-01T21:00:00+00:00", 100.0),
-                ("2026-01-02T21:00:00+00:00", 101.0),
-                ("2026-01-03T21:00:00+00:00", 101.505),
-                ("2026-01-04T21:00:00+00:00", 103.5351),
-                ("2026-01-05T21:00:00+00:00", 103.0174245),
-                ("2026-01-06T21:00:00+00:00", 108.168295725),
-                ("2026-01-07T21:00:00+00:00", 107.08661276775),
+                ("2026-01-02T21:00:00+00:00", 100.0),
+                ("2026-01-05T21:00:00+00:00", 101.0),
+                ("2026-01-06T21:00:00+00:00", 101.505),
+                ("2026-01-07T21:00:00+00:00", 103.5351),
+                ("2026-01-08T21:00:00+00:00", 103.0174245),
+                ("2026-01-09T21:00:00+00:00", 108.168295725),
+                ("2026-01-12T21:00:00+00:00", 107.08661276775),
             ],
         )
 
     monkeypatch.setattr(tools, "get_price_data", fake_prices)
 
-    out = tools.run_event_study("SPY", "2026-01-06", window=1)
+    out = tools.run_event_study("SPY", "2026-01-09", window=1)
 
     assert out["available"] is True
-    assert "bootstrap_mean_abnormal_return_ci_bps" not in out["summary"]
+    assert out["n_pre_obs"] == 3
+    assert out["baseline"]["n_returns"] == 3
+    assert out["baseline"]["return_dates"] == [
+        "2026-01-05",
+        "2026-01-06",
+        "2026-01-07",
+    ]
+    assert out["baseline"]["cutoff_date"] == "2026-01-08"
+    assert out["baseline"]["return_type"] == "log"
+    expected_return_bps = np.mean([np.log(1.01), np.log(1.005), np.log(1.02)]) * 1e4
+    assert out["baseline"]["expected_return_bps"] == pytest.approx(expected_return_bps)
+    event_rows = out["event_window"]
+    assert [row["relative_day"] for row in event_rows] == [-1, 0, 1]
+    assert [row["date"] for row in event_rows] == [
+        "2026-01-08",
+        "2026-01-09",
+        "2026-01-12",
+    ]
+    running_car = 0.0
+    for row in event_rows:
+        assert row["ar_bps"] == pytest.approx(
+            row["actual_return_bps"] - row["expected_return_bps"], abs=1e-5
+        )
+        running_car += row["ar_bps"]
+        assert row["car_bps"] == pytest.approx(running_car, abs=1e-5)
 
-    ci = out["summary"]["pre_event_hac_mean_abnormal_return_ci_bps"]
-    assert ci["method"] == "pre_event_newey_west"
-    assert ci["baseline_n"] == out["baseline"]["n_returns"]
-    assert ci["event_n"] == out["summary"]["n_observations"]
-    assert ci["lags"] >= 0
-    assert ci["se"] > 0
-    assert ci["low"] < out["summary"]["mean_abnormal_return_bps"] < ci["high"]
+    assert out["summary"]["car_bps"] == pytest.approx(event_rows[-1]["car_bps"])
+    ci = out["summary"]["bootstrap_car_ci_bps"]
+    assert ci["method"] == "pre_event_residual_percentile"
+    assert ci["samples"] == 1000
+    assert ci["n_pre_obs"] == out["n_pre_obs"]
+    assert ci["event_n"] == len(event_rows)
+    pre_event_returns = np.array(
+        [np.log(1.01), np.log(1.005), np.log(1.02)], dtype=float
+    ) * 1e4
+    centered = pre_event_returns - pre_event_returns.mean()
+    rng = np.random.default_rng(0)
+    expected_cars = out["summary"]["car_bps"] + rng.choice(
+        centered,
+        size=(1000, len(event_rows)),
+        replace=True,
+    ).sum(axis=1)
+    expected_low, expected_high = np.percentile(expected_cars, [2.5, 97.5])
+    assert ci["low"] == pytest.approx(expected_low)
+    assert ci["high"] == pytest.approx(expected_high)
 
     leakage = out["leakage_check"]
+    assert leakage["status"] == "passed"
+    assert leakage["baseline_uses_only_pre_window_data"] is True
+    assert leakage["bootstrap_uses_only_pre_window_data"] is True
+    assert leakage["baseline_cutoff_date"] == "2026-01-08"
+    assert leakage["max_baseline_date"] == "2026-01-07"
     assert leakage["error_estimate_uses_only_pre_event_data"] is True
     assert leakage["error_estimate_return_dates"] == out["baseline"]["return_dates"]
 
 
-def test_run_event_study_error_scale_is_invariant_to_post_event_prices(monkeypatch):
-    def fake_prices_with_post_close(post_close: float):
-        def fake_prices(ticker: str, start: str, end: str) -> dict:
-            return _price_payload(
-                ticker,
-                [
-                    ("2026-01-01T21:00:00+00:00", 100.0),
-                    ("2026-01-02T21:00:00+00:00", 101.0),
-                    ("2026-01-03T21:00:00+00:00", 101.505),
-                    ("2026-01-04T21:00:00+00:00", 103.5351),
-                    ("2026-01-05T21:00:00+00:00", 103.0174245),
-                    ("2026-01-06T21:00:00+00:00", 108.168295725),
-                    ("2026-01-07T21:00:00+00:00", post_close),
-                ],
-            )
-
-        return fake_prices
-
-    monkeypatch.setattr(tools, "get_price_data", fake_prices_with_post_close(107.0))
-    out_a = tools.run_event_study("SPY", "2026-01-06", window=1)
-
-    monkeypatch.setattr(tools, "get_price_data", fake_prices_with_post_close(130.0))
-    out_b = tools.run_event_study("SPY", "2026-01-06", window=1)
-
-    ci_a = out_a["summary"]["pre_event_hac_mean_abnormal_return_ci_bps"]
-    ci_b = out_b["summary"]["pre_event_hac_mean_abnormal_return_ci_bps"]
-    assert ci_a["se"] == ci_b["se"]
-    assert ci_a["baseline_n"] == ci_b["baseline_n"]
-    assert out_a["leakage_check"]["error_estimate_return_dates"] == out_b["leakage_check"][
-        "error_estimate_return_dates"
-    ]
-    assert (
-        out_a["summary"]["mean_abnormal_return_bps"]
-        != out_b["summary"]["mean_abnormal_return_bps"]
+def test_baseline_leakage_assertion_fires_at_window_start():
+    cutoff = pd.Timestamp("2026-01-05", tz="UTC")
+    leaking_dates = pd.DatetimeIndex(
+        [pd.Timestamp("2026-01-04", tz="UTC"), pd.Timestamp("2026-01-05", tz="UTC")]
     )
+
+    with pytest.raises(AssertionError, match="Baseline leakage"):
+        tools._assert_no_baseline_leakage(leaking_dates, cutoff)
 
 
 def test_run_event_study_requires_pre_event_baseline(monkeypatch):
-    def fake_prices(ticker: str, start: str, end: str) -> dict:
+    def fake_prices(
+        ticker: str,
+        start: str,
+        end: str,
+        *,
+        max_rows: int | None = 2000,
+    ) -> dict:
+        assert max_rows is None
         return _price_payload(
             ticker,
             [
-                ("2026-01-03T21:00:00+00:00", 100.0),
-                ("2026-01-04T21:00:00+00:00", 101.0),
-                ("2026-01-05T21:00:00+00:00", 102.0),
+                ("2026-01-06T21:00:00+00:00", 100.0),
+                ("2026-01-07T21:00:00+00:00", 101.0),
+                ("2026-01-08T21:00:00+00:00", 102.0),
+                ("2026-01-09T21:00:00+00:00", 103.0),
+                ("2026-01-12T21:00:00+00:00", 104.0),
             ],
         )
 
     monkeypatch.setattr(tools, "get_price_data", fake_prices)
 
-    out = tools.run_event_study("SPY", "2026-01-04", window=1)
+    out = tools.run_event_study("SPY", "2026-01-09", window=1)
 
     assert out["available"] is False
     assert "pre-event" in out["reason"].lower()
-    assert out["leakage_check"]["baseline_uses_only_pre_event_data"] is True
+    assert out["n_pre_obs"] == 1
+    assert out["leakage_check"]["status"] == "passed"
+    assert out["leakage_check"]["baseline_uses_only_pre_window_data"] is True
 
 
 def test_event_study_endpoint_calls_tool(monkeypatch):
