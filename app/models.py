@@ -46,8 +46,14 @@ class ResearchResponse(BaseModel):
 
 class EventStudyRequest(BaseModel):
     ticker: str
-    event_date: str  # YYYY-MM-DD
-    window: int = 5   # +/- trading days around the event
+    event_date: str = Field(
+        ...,
+        description=(
+            "YYYY-MM-DD or a timezone-aware ISO timestamp. Timestamps at/after "
+            "16:00 America/New_York align to the next observed trading day."
+        ),
+    )
+    window: int = Field(5, ge=0, description="Trading observations on each side.")
 
 
 class DocumentInfo(BaseModel):

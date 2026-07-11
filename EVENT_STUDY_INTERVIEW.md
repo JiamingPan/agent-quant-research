@@ -7,26 +7,32 @@ model answer. Memorize the reasoning, not the wording.
 
 `run_event_study(ticker, event_date, window)` does this:
 
-1. Load the complete internal price range through `get_price_data`.
-2. Reduce intraday bars to one closing price per trading day.
-3. Compute daily log returns in basis points:
+1. Parse a date or timezone-aware event timestamp. Convert timestamps to New York time.
+2. Load the complete internal price range through `get_price_data` and identify its
+   observed trading dates.
+3. Align before-close timestamps to the same observed trading day; align at/after-close,
+   weekend, and holiday timestamps to the next observed trading day.
+4. Reduce intraday bars to one closing price per trading day.
+5. Compute daily log returns in basis points:
 
    ```text
    return_t = log(close_t / close_(t-1)) * 10,000
    ```
 
-4. Locate the event date in the trading-day series and select `[-window, +window]`.
-5. Build the baseline from returns strictly before the first day of that event window.
-6. Estimate expected return as the mean baseline log return.
-7. Calculate daily abnormal return and cumulative abnormal return:
+6. Locate the aligned event date in the trading-day series and select
+   `[-window, +window]`.
+7. Build the baseline from returns strictly before the first day of that event window.
+8. Estimate expected return as the mean baseline log return.
+9. Calculate daily abnormal return and cumulative abnormal return:
 
    ```text
    AR_t  = actual_return_t - expected_return
    CAR_t = sum of AR from the start of the event window through day t
    ```
 
-8. Build a 95% CAR interval from 1,000 resamples of centered pre-event returns.
-9. Return daily AR/CAR, the interval, `n_pre_obs`, and the leakage-check status.
+10. Build a 95% CAR interval from 1,000 resamples of centered pre-event returns.
+11. Return alignment metadata, daily AR/CAR, the interval, `n_pre_obs`, and the
+    leakage-check status.
 
 The key boundary is:
 
@@ -152,6 +158,17 @@ Markets do not trade every calendar day. For a Friday event, trading day `+1` is
 Monday, not Saturday. The code locates the event inside the observed daily series and moves
 by trading observations.
 
+### How is an event timestamp aligned?
+
+The input must include a timezone. The code converts it to `America/New_York`. Before the
+regular 16:00 close, a timestamp on an observed trading day uses that day's close. At or
+after 16:00, it uses the next observed trading day. Weekends and holidays also move to the
+next observed trading day. For example, Friday at 16:30 aligns day `0` to Monday.
+
+The response returns the original input and the exact alignment rule. This makes the choice
+auditable instead of silently shifting the event. The current MVP assumes a regular 16:00
+close; production code should use an exchange calendar for early-close sessions.
+
 ### Is `n_pre_obs >= 2` enough for trustworthy inference?
 
 No. Two observations are only the code's minimum availability check. A bootstrap from two
@@ -174,9 +191,11 @@ could add a market model, matched controls, narrower timestamps, and robustness 
 
 ## The 60-Second Interview Answer
 
-> I built the event study around a strict no-look-ahead boundary. I convert daily closes to
-> log returns, locate the event window in trading-day space, and estimate expected return as
-> the mean of observations strictly before day minus window. Daily abnormal return is actual
+> I built the event study around a strict no-look-ahead boundary. A timezone-aware event
+> timestamp is converted to New York time and aligned to the first close that can reflect the
+> news: same day before 16:00, next observed trading day at or after the close. I convert daily
+> closes to log returns, locate the event window in trading-day space, and estimate expected
+> return as the mean of observations strictly before day minus window. Daily abnormal return is actual
 > minus expected, and CAR is its cumulative sum. An explicit assertion proves no event-window
 > observation enters the baseline. For uncertainty, I generate 1,000 CAR draws from centered
 > pre-event residuals and report the percentile interval. That avoids imposing a normal

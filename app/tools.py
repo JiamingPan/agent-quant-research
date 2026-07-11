@@ -8,7 +8,9 @@ Day 3: run_event_study is leakage-checked with a pre-window bootstrap CI.
 from __future__ import annotations
 
 import os
+import re
 import sys
+from datetime import time
 from pathlib import Path
 from typing import Optional
 
@@ -23,6 +25,13 @@ MIN_BASELINE_RETURNS = 2
 BOOTSTRAP_SAMPLES = 1000
 BOOTSTRAP_SEED = 0
 EVENT_FETCH_BUFFER_DAYS = 7
+MARKET_TIMEZONE = "America/New_York"
+MARKET_CLOSE = time(16, 0)
+DATE_ONLY_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+class EventInputError(ValueError):
+    """Invalid event-study input supplied by the API caller."""
 
 
 def search_docs(query: str, k: int = 4) -> dict:
@@ -259,11 +268,15 @@ def run_event_study(ticker: str, event_date: str, window: int = 5) -> dict:
         raise ValueError("window must be non-negative")
 
     ticker = ticker.upper()
-    event_ts = _parse_bound(event_date, is_end=False).normalize()
-    baseline_cutoff = event_ts - pd.Timedelta(days=window)
-    fetch_start = (event_ts - pd.Timedelta(days=BASELINE_LOOKBACK_DAYS)).date().isoformat()
+    event_context = _parse_event_input(event_date)
+    reference_date = event_context["reference_date"]
+    alignment = _alignment_payload(event_context, aligned_event_date=None, rule="unresolved")
+    baseline_cutoff = reference_date - pd.Timedelta(days=window)
+    fetch_start = (
+        reference_date - pd.Timedelta(days=BASELINE_LOOKBACK_DAYS)
+    ).date().isoformat()
     fetch_end = (
-        event_ts + pd.Timedelta(days=2 * window + EVENT_FETCH_BUFFER_DAYS)
+        reference_date + pd.Timedelta(days=2 * window + EVENT_FETCH_BUFFER_DAYS)
     ).date().isoformat()
     prices = get_price_data(ticker, fetch_start, fetch_end, max_rows=None)
     if not prices.get("available"):
@@ -273,7 +286,9 @@ def run_event_study(ticker: str, event_date: str, window: int = 5) -> dict:
             window,
             prices.get("reason") or "price data unavailable",
             baseline_dates=[],
-            baseline_cutoff=baseline_cutoff,
+            baseline_cutoff=None,
+            event_ts=None,
+            alignment=alignment,
         )
 
     daily = _daily_close_returns(prices.get("rows", []))
@@ -284,36 +299,55 @@ def run_event_study(ticker: str, event_date: str, window: int = 5) -> dict:
             window,
             "price data has no daily close returns",
             baseline_dates=[],
-            baseline_cutoff=baseline_cutoff,
+            baseline_cutoff=None,
+            event_ts=None,
+            alignment=alignment,
         )
 
-    if event_ts not in daily.index:
+    event_ts, alignment = _align_event_to_trading_day(event_context, daily.index)
+    if event_ts is None:
         return _event_study_unavailable(
             ticker,
             event_date,
             window,
-            "Event date has no daily close observation.",
+            "No trading-day close is available for the event alignment.",
             baseline_dates=[],
-            baseline_cutoff=baseline_cutoff,
+            baseline_cutoff=None,
+            event_ts=None,
+            alignment=alignment,
         )
 
     event_position = int(daily.index.get_loc(event_ts))
     window_start_position = event_position - window
     window_end_position = event_position + window
-    if window_start_position < 0 or window_end_position >= len(daily):
+    if window_start_position < 0:
         return _event_study_unavailable(
             ticker,
             event_date,
             window,
             f"Need {window} trading observations on each side of the event date.",
             baseline_dates=[],
-            baseline_cutoff=baseline_cutoff,
+            baseline_cutoff=None,
+            event_ts=event_ts,
+            alignment=alignment,
         )
 
     baseline_cutoff = daily.index[window_start_position]
     baseline = daily.iloc[:window_start_position]["return_bps"].dropna()
     _assert_no_baseline_leakage(baseline.index, baseline_cutoff)
     baseline_dates = [idx.date().isoformat() for idx in baseline.index]
+    if window_end_position >= len(daily):
+        return _event_study_unavailable(
+            ticker,
+            event_date,
+            window,
+            f"Need {window} trading observations on each side of the event date.",
+            baseline_dates=baseline_dates,
+            baseline_cutoff=baseline_cutoff,
+            event_ts=event_ts,
+            alignment=alignment,
+        )
+
     if len(baseline) < MIN_BASELINE_RETURNS:
         return _event_study_unavailable(
             ticker,
@@ -323,6 +357,8 @@ def run_event_study(ticker: str, event_date: str, window: int = 5) -> dict:
             f"{baseline_cutoff.date().isoformat()} for baseline.",
             baseline_dates=baseline_dates,
             baseline_cutoff=baseline_cutoff,
+            event_ts=event_ts,
+            alignment=alignment,
         )
 
     expected_return_bps = float(baseline.mean())
@@ -336,6 +372,8 @@ def run_event_study(ticker: str, event_date: str, window: int = 5) -> dict:
             "Event window has missing daily return observations.",
             baseline_dates=baseline_dates,
             baseline_cutoff=baseline_cutoff,
+            event_ts=event_ts,
+            alignment=alignment,
         )
 
     event_window["relative_day"] = np.arange(-window, window + 1)
@@ -353,7 +391,9 @@ def run_event_study(ticker: str, event_date: str, window: int = 5) -> dict:
 
     return {
         "ticker": ticker,
-        "event_date": event_date,
+        "event_input": event_date,
+        "event_date": event_ts.date().isoformat(),
+        "alignment": alignment,
         "window": window,
         "available": True,
         "price_source": prices.get("source"),
@@ -380,6 +420,92 @@ def run_event_study(ticker: str, event_date: str, window: int = 5) -> dict:
         },
         "leakage_check": _leakage_check(event_ts, baseline_cutoff, baseline.index),
         "reason": None,
+    }
+
+
+def _parse_event_input(value: str) -> dict:
+    cleaned = value.strip()
+    if DATE_ONLY_PATTERN.fullmatch(cleaned):
+        try:
+            reference_date = pd.Timestamp(cleaned).tz_localize("UTC").normalize()
+        except (TypeError, ValueError) as exc:
+            raise EventInputError("event_date must be a valid YYYY-MM-DD date") from exc
+        return {
+            "input": cleaned,
+            "input_kind": "date",
+            "reference_date": reference_date,
+            "local_timestamp": None,
+            "at_or_after_close": False,
+        }
+
+    try:
+        timestamp = pd.Timestamp(cleaned)
+    except (TypeError, ValueError) as exc:
+        raise EventInputError(
+            "event_date must be YYYY-MM-DD or a timezone-aware ISO timestamp"
+        ) from exc
+    if timestamp.tzinfo is None:
+        raise EventInputError(
+            "event timestamp must include a timezone offset, for example "
+            "2026-01-09T16:30:00-05:00"
+        )
+
+    local_timestamp = timestamp.tz_convert(MARKET_TIMEZONE)
+    reference_date = pd.Timestamp(local_timestamp.date()).tz_localize("UTC")
+    return {
+        "input": cleaned,
+        "input_kind": "timestamp",
+        "reference_date": reference_date,
+        "local_timestamp": local_timestamp,
+        "at_or_after_close": local_timestamp.time() >= MARKET_CLOSE,
+    }
+
+
+def _align_event_to_trading_day(
+    event_context: dict,
+    trading_dates: pd.DatetimeIndex,
+) -> tuple[Optional[pd.Timestamp], dict]:
+    reference_date = event_context["reference_date"]
+    is_trading_day = reference_date in trading_dates
+
+    if event_context["input_kind"] == "date":
+        aligned = reference_date if is_trading_day else None
+        rule = "date_as_given" if aligned is not None else "date_has_no_trading_observation"
+        return aligned, _alignment_payload(event_context, aligned, rule)
+
+    if is_trading_day and not event_context["at_or_after_close"]:
+        return reference_date, _alignment_payload(
+            event_context,
+            reference_date,
+            "before_close_same_trading_day",
+        )
+
+    future_dates = trading_dates[trading_dates > reference_date]
+    aligned = future_dates[0] if len(future_dates) else None
+    if not is_trading_day:
+        rule = "non_trading_day_next_trading_day"
+    else:
+        rule = "at_or_after_close_next_trading_day"
+    return aligned, _alignment_payload(event_context, aligned, rule)
+
+
+def _alignment_payload(
+    event_context: dict,
+    aligned_event_date: Optional[pd.Timestamp],
+    rule: str,
+) -> dict:
+    local_timestamp = event_context["local_timestamp"]
+    return {
+        "input_kind": event_context["input_kind"],
+        "local_timestamp": (
+            local_timestamp.isoformat() if local_timestamp is not None else None
+        ),
+        "market_timezone": MARKET_TIMEZONE,
+        "market_close": MARKET_CLOSE.strftime("%H:%M"),
+        "aligned_event_date": (
+            aligned_event_date.date().isoformat() if aligned_event_date is not None else None
+        ),
+        "rule": rule,
     }
 
 
@@ -476,22 +602,32 @@ def _assert_no_baseline_leakage(
 
 
 def _leakage_check(
-    event_ts: pd.Timestamp,
-    baseline_cutoff: pd.Timestamp,
+    event_ts: Optional[pd.Timestamp],
+    baseline_cutoff: Optional[pd.Timestamp],
     baseline_index: pd.DatetimeIndex,
 ) -> dict:
     dates = [idx.date().isoformat() for idx in baseline_index]
-    uses_only_pre_window = all(idx < baseline_cutoff for idx in baseline_index)
+    uses_only_pre_window = (
+        all(idx < baseline_cutoff for idx in baseline_index)
+        if baseline_cutoff is not None
+        else None
+    )
     return {
-        "status": "passed" if uses_only_pre_window else "failed",
-        "baseline_uses_only_pre_window_data": bool(uses_only_pre_window),
-        "bootstrap_uses_only_pre_window_data": bool(uses_only_pre_window),
-        "baseline_uses_only_pre_event_data": bool(uses_only_pre_window),
-        "event_date": event_ts.date().isoformat(),
-        "baseline_cutoff_date": baseline_cutoff.date().isoformat(),
+        "status": (
+            "not_run"
+            if uses_only_pre_window is None
+            else "passed" if uses_only_pre_window else "failed"
+        ),
+        "baseline_uses_only_pre_window_data": uses_only_pre_window,
+        "bootstrap_uses_only_pre_window_data": uses_only_pre_window,
+        "baseline_uses_only_pre_event_data": uses_only_pre_window,
+        "event_date": event_ts.date().isoformat() if event_ts is not None else None,
+        "baseline_cutoff_date": (
+            baseline_cutoff.date().isoformat() if baseline_cutoff is not None else None
+        ),
         "baseline_return_dates": dates,
         "bootstrap_return_dates": dates,
-        "error_estimate_uses_only_pre_event_data": bool(uses_only_pre_window),
+        "error_estimate_uses_only_pre_event_data": uses_only_pre_window,
         "error_estimate_return_dates": dates,
         "max_baseline_date": dates[-1] if dates else None,
     }
@@ -503,16 +639,18 @@ def _event_study_unavailable(
     window: int,
     reason: str,
     baseline_dates: list[str],
-    baseline_cutoff: pd.Timestamp,
+    baseline_cutoff: Optional[pd.Timestamp],
+    event_ts: Optional[pd.Timestamp],
+    alignment: dict,
 ) -> dict:
-    event_ts = _parse_bound(event_date, is_end=False).normalize()
-    baseline_index = pd.DatetimeIndex(
-        [pd.Timestamp(date).tz_localize("UTC") for date in baseline_dates]
-    )
-    _assert_no_baseline_leakage(baseline_index, baseline_cutoff)
+    baseline_index = pd.to_datetime(baseline_dates, utc=True)
+    if baseline_cutoff is not None:
+        _assert_no_baseline_leakage(baseline_index, baseline_cutoff)
     return {
         "ticker": ticker.upper(),
-        "event_date": event_date,
+        "event_input": event_date,
+        "event_date": event_ts.date().isoformat() if event_ts is not None else None,
+        "alignment": alignment,
         "window": window,
         "available": False,
         "n_pre_obs": len(baseline_dates),
@@ -520,7 +658,9 @@ def _event_study_unavailable(
             "model": "mean_close_to_close_log_return",
             "return_type": "log",
             "lookback_days": BASELINE_LOOKBACK_DAYS,
-            "cutoff_date": baseline_cutoff.date().isoformat(),
+            "cutoff_date": (
+                baseline_cutoff.date().isoformat() if baseline_cutoff is not None else None
+            ),
             "n_returns": len(baseline_dates),
             "return_dates": baseline_dates,
         },

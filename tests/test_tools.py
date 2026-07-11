@@ -122,6 +122,10 @@ def test_run_event_study_returns_log_ar_car_and_bootstrap_ci(monkeypatch):
     out = tools.run_event_study("SPY", "2026-01-09", window=1)
 
     assert out["available"] is True
+    assert out["event_input"] == "2026-01-09"
+    assert out["event_date"] == "2026-01-09"
+    assert out["alignment"]["input_kind"] == "date"
+    assert out["alignment"]["rule"] == "date_as_given"
     assert out["n_pre_obs"] == 3
     assert out["baseline"]["n_returns"] == 3
     assert out["baseline"]["return_dates"] == [
@@ -176,6 +180,163 @@ def test_run_event_study_returns_log_ar_car_and_bootstrap_ci(monkeypatch):
     assert leakage["max_baseline_date"] == "2026-01-07"
     assert leakage["error_estimate_uses_only_pre_event_data"] is True
     assert leakage["error_estimate_return_dates"] == out["baseline"]["return_dates"]
+
+
+def test_before_close_timestamp_uses_same_trading_day(monkeypatch):
+    monkeypatch.setattr(tools, "get_price_data", _event_price_loader)
+
+    out = tools.run_event_study(
+        "SPY",
+        "2026-01-09T15:30:00-05:00",
+        window=1,
+    )
+
+    assert out["available"] is True
+    assert out["event_input"] == "2026-01-09T15:30:00-05:00"
+    assert out["event_date"] == "2026-01-09"
+    assert out["alignment"]["aligned_event_date"] == "2026-01-09"
+    assert out["alignment"]["local_timestamp"] == "2026-01-09T15:30:00-05:00"
+    assert out["alignment"]["rule"] == "before_close_same_trading_day"
+    assert [row["date"] for row in out["event_window"]] == [
+        "2026-01-08",
+        "2026-01-09",
+        "2026-01-12",
+    ]
+
+
+def test_after_close_timestamp_uses_next_trading_day(monkeypatch):
+    monkeypatch.setattr(tools, "get_price_data", _event_price_loader)
+
+    out = tools.run_event_study(
+        "SPY",
+        "2026-01-09T16:30:00-05:00",
+        window=1,
+    )
+
+    assert out["available"] is True
+    assert out["event_input"] == "2026-01-09T16:30:00-05:00"
+    assert out["event_date"] == "2026-01-12"
+    assert out["alignment"]["aligned_event_date"] == "2026-01-12"
+    assert out["alignment"]["market_timezone"] == "America/New_York"
+    assert out["alignment"]["market_close"] == "16:00"
+    assert out["alignment"]["rule"] == "at_or_after_close_next_trading_day"
+    assert [row["date"] for row in out["event_window"]] == [
+        "2026-01-09",
+        "2026-01-12",
+        "2026-01-13",
+    ]
+
+
+def test_exact_market_close_uses_next_trading_day(monkeypatch):
+    monkeypatch.setattr(tools, "get_price_data", _event_price_loader)
+
+    out = tools.run_event_study(
+        "SPY",
+        "2026-01-09T16:00:00-05:00",
+        window=1,
+    )
+
+    assert out["event_date"] == "2026-01-12"
+    assert out["alignment"]["rule"] == "at_or_after_close_next_trading_day"
+
+
+def test_utc_timestamp_converts_with_summer_daylight_saving_time():
+    context = tools._parse_event_input("2026-07-10T20:30:00Z")
+    trading_dates = pd.DatetimeIndex(
+        [pd.Timestamp("2026-07-10", tz="UTC"), pd.Timestamp("2026-07-13", tz="UTC")]
+    )
+
+    event_date, alignment = tools._align_event_to_trading_day(context, trading_dates)
+
+    assert alignment["local_timestamp"] == "2026-07-10T16:30:00-04:00"
+    assert event_date == pd.Timestamp("2026-07-13", tz="UTC")
+
+
+def test_missing_holiday_date_aligns_to_next_observed_trading_day():
+    context = tools._parse_event_input("2026-07-03T12:00:00-04:00")
+    trading_dates = pd.DatetimeIndex(
+        [pd.Timestamp("2026-07-02", tz="UTC"), pd.Timestamp("2026-07-06", tz="UTC")]
+    )
+
+    event_date, alignment = tools._align_event_to_trading_day(context, trading_dates)
+
+    assert event_date == pd.Timestamp("2026-07-06", tz="UTC")
+    assert alignment["rule"] == "non_trading_day_next_trading_day"
+
+
+def test_weekend_timestamp_uses_next_trading_day(monkeypatch):
+    monkeypatch.setattr(tools, "get_price_data", _event_price_loader)
+
+    out = tools.run_event_study(
+        "SPY",
+        "2026-01-10T12:00:00-05:00",
+        window=1,
+    )
+
+    assert out["available"] is True
+    assert out["event_date"] == "2026-01-12"
+    assert out["alignment"]["rule"] == "non_trading_day_next_trading_day"
+
+
+def test_unavailable_window_uses_aligned_event_cutoff(monkeypatch):
+    def prices_missing_next_day(
+        ticker: str,
+        start: str,
+        end: str,
+        *,
+        max_rows: int | None = 2000,
+    ) -> dict:
+        return _price_payload(
+            ticker,
+            [
+                ("2026-01-02T21:00:00+00:00", 100.0),
+                ("2026-01-05T21:00:00+00:00", 101.0),
+                ("2026-01-06T21:00:00+00:00", 102.0),
+                ("2026-01-07T21:00:00+00:00", 103.0),
+                ("2026-01-08T21:00:00+00:00", 104.0),
+                ("2026-01-09T21:00:00+00:00", 105.0),
+                ("2026-01-12T21:00:00+00:00", 106.0),
+            ],
+        )
+
+    monkeypatch.setattr(tools, "get_price_data", prices_missing_next_day)
+
+    out = tools.run_event_study(
+        "SPY",
+        "2026-01-09T16:30:00-05:00",
+        window=1,
+    )
+
+    assert out["available"] is False
+    assert out["event_date"] == "2026-01-12"
+    assert out["baseline"]["cutoff_date"] == "2026-01-09"
+    assert out["leakage_check"]["event_date"] == "2026-01-12"
+
+
+def test_price_unavailable_does_not_claim_an_aligned_date(monkeypatch):
+    def unavailable_prices(
+        ticker: str,
+        start: str,
+        end: str,
+        *,
+        max_rows: int | None = 2000,
+    ) -> dict:
+        return {"available": False, "reason": "cache unavailable"}
+
+    monkeypatch.setattr(tools, "get_price_data", unavailable_prices)
+
+    out = tools.run_event_study(
+        "SPY",
+        "2026-01-09T16:30:00-05:00",
+        window=1,
+    )
+
+    assert out["available"] is False
+    assert out["event_date"] is None
+    assert out["baseline"]["cutoff_date"] is None
+    assert out["alignment"]["aligned_event_date"] is None
+    assert out["alignment"]["rule"] == "unresolved"
+    assert out["leakage_check"]["status"] == "not_run"
 
 
 def test_baseline_leakage_assertion_fires_at_window_start():
@@ -244,6 +405,48 @@ def test_event_study_endpoint_calls_tool(monkeypatch):
     }
 
 
+def test_event_study_endpoint_rejects_timestamp_without_timezone(monkeypatch):
+    def unavailable_prices(
+        ticker: str,
+        start: str,
+        end: str,
+        *,
+        max_rows: int | None = 2000,
+    ) -> dict:
+        return {
+            "available": False,
+            "reason": "test should fail validation before loading prices",
+        }
+
+    monkeypatch.setattr(tools, "get_price_data", unavailable_prices)
+
+    response = TestClient(app).post(
+        "/event-study",
+        json={
+            "ticker": "SPY",
+            "event_date": "2026-01-09T16:30:00",
+            "window": 1,
+        },
+    )
+
+    assert response.status_code == 422
+    assert "timezone" in response.json()["detail"].lower()
+
+
+def test_event_study_endpoint_does_not_map_internal_value_error_to_422(monkeypatch):
+    def broken_event_study(ticker: str, event_date: str, window: int) -> dict:
+        raise ValueError("internal price frame error")
+
+    monkeypatch.setattr(tools, "run_event_study", broken_event_study)
+
+    response = TestClient(app, raise_server_exceptions=False).post(
+        "/event-study",
+        json={"ticker": "SPY", "event_date": "2026-01-09", "window": 1},
+    )
+
+    assert response.status_code == 500
+
+
 def _price_payload(ticker: str, closes: list[tuple[str, float]]) -> dict:
     return {
         "ticker": ticker,
@@ -257,3 +460,26 @@ def _price_payload(ticker: str, closes: list[tuple[str, float]]) -> dict:
         "truncated": False,
         "reason": None,
     }
+
+
+def _event_price_loader(
+    ticker: str,
+    start: str,
+    end: str,
+    *,
+    max_rows: int | None = 2000,
+) -> dict:
+    assert max_rows is None
+    return _price_payload(
+        ticker,
+        [
+            ("2026-01-02T21:00:00+00:00", 100.0),
+            ("2026-01-05T21:00:00+00:00", 101.0),
+            ("2026-01-06T21:00:00+00:00", 101.505),
+            ("2026-01-07T21:00:00+00:00", 103.5351),
+            ("2026-01-08T21:00:00+00:00", 103.0174245),
+            ("2026-01-09T21:00:00+00:00", 108.168295725),
+            ("2026-01-12T21:00:00+00:00", 107.08661276775),
+            ("2026-01-13T21:00:00+00:00", 108.1574788954275),
+        ],
+    )

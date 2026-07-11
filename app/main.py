@@ -52,4 +52,7 @@ def research(req: ResearchRequest):
 
 @app.post("/event-study")
 def event_study(req: EventStudyRequest):
-    return tools.run_event_study(req.ticker, req.event_date, req.window)
+    try:
+        return tools.run_event_study(req.ticker, req.event_date, req.window)
+    except tools.EventInputError as exc:
+        raise HTTPException(422, str(exc)) from exc

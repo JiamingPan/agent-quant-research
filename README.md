@@ -100,9 +100,12 @@ full internal range so minute-bar truncation cannot discard its baseline or even
 ## Event Study Tool
 
 `run_event_study(ticker, event_date, window)` computes close-to-close log abnormal returns
-around an event date. The MVP baseline is intentionally simple and auditable:
+around an event. `event_date` accepts either `YYYY-MM-DD` or a timezone-aware ISO timestamp.
+The MVP baseline is intentionally simple and auditable:
 
-1. Load prices around the event.
+1. Load prices around the event. A timestamp before 16:00 New York time aligns to that
+   observed trading day; a timestamp at/after 16:00, on a weekend, or on a holiday aligns
+   to the next observed trading day.
 2. Convert prices to daily close-to-close log returns in basis points.
 3. Locate `[-window, +window]` by trading observations, then fit expected log return as
    the mean of returns strictly before the first observation in that window.
@@ -113,7 +116,24 @@ around an event date. The MVP baseline is intentionally simple and auditable:
 
 The leakage check is the main point: an explicit assertion rejects any baseline date on or
 after the event-window start. The response returns the baseline and bootstrap source dates,
-`n_pre_obs`, and a `passed`/`failed` leakage status.
+`n_pre_obs`, and a `passed`/`failed` leakage status. If prices are unavailable and alignment
+cannot be established, `event_date` is `null` and leakage status is `not_run` rather than a
+guessed result.
+
+The response also returns `event_input`, the aligned `event_date`, and an `alignment` object
+containing the New York-local timestamp and rule used. Timestamp inputs must include a
+timezone offset. This MVP assumes the regular 16:00 close; an exchange calendar is still
+needed for scheduled early-close sessions.
+
+Example after-close request:
+
+```json
+{
+  "ticker": "AAPL",
+  "event_date": "2026-01-09T16:30:00-05:00",
+  "window": 1
+}
+```
 
 For the interview explanation and 10-minute self-quiz, see
 [EVENT_STUDY_INTERVIEW.md](EVENT_STUDY_INTERVIEW.md).
