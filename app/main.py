@@ -1,10 +1,7 @@
-"""
-FastAPI surface. /ingest, /search, /documents, and /event-study are live.
-/research (agent) lands on Day 4 — it returns 501 for now.
-"""
+"""FastAPI surface for ingestion, retrieval, agent research, and event studies."""
 from __future__ import annotations
 from fastapi import FastAPI, HTTPException
-from . import rag, tools
+from . import agent, rag, tools
 from .models import (
     IngestRequest, IngestResponse, SearchResponse, Citation,
     ResearchRequest, ResearchResponse, EventStudyRequest, DocumentInfo,
@@ -47,7 +44,17 @@ def documents():
 
 @app.post("/research", response_model=ResearchResponse)
 def research(req: ResearchRequest):
-    raise HTTPException(501, "agent loop not implemented yet (Day 4)")
+    try:
+        out = agent.run_agent(req.question)
+    except agent.AgentConfigurationError as exc:
+        raise HTTPException(503, str(exc)) from exc
+    return ResearchResponse(
+        question=req.question,
+        answer=out["answer"],
+        citations=[Citation(**item) for item in out["citations"]],
+        confidence=out["confidence"],
+        refused=out["refused"],
+    )
 
 
 @app.post("/event-study")

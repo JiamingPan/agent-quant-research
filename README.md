@@ -4,8 +4,8 @@ Citation-grounded RAG and eval infrastructure for financial research documents.
 
 A RAG + agent service over financial documents and price data that produces reproducible,
 leakage-checked research memos and event studies. **Not** live trading — no buy/sell claims.
-The point is rigorous, reproducible research *infrastructure*: every claim cites a retrieved
-passage, weak-evidence questions get refused, and the event-study tool is leakage-checked.
+The point is rigorous, reproducible research *infrastructure*: answers must use retrieved
+citations, weak-evidence questions get refused, and the event-study tool is leakage-checked.
 
 This is a standalone public MVP repo. It intentionally excludes private trading strategy,
 backtests, runbooks, live execution, broker automation, and proprietary data.
@@ -48,6 +48,10 @@ Eval harness: hit@k · MRR · grounding · tool success · refusal · leakage
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
+export OPENAI_API_KEY="your-key"
+export AGENT_MODEL="your-model-name"
+# Optional for an OpenAI-compatible provider:
+# export OPENAI_BASE_URL="https://provider.example/v1"
 uvicorn app.main:app --reload
 # then: http://127.0.0.1:8000/docs
 ```
@@ -86,6 +90,34 @@ The response should include a retrieved passage from `sample_apple::0`.
 
 The refusal rule is intentionally simple for the MVP: if the top passage score is below
 `REFUSE_SCORE_THRESHOLD = 0.25`, the API refuses rather than pretending it found evidence.
+
+## Research Agent
+
+`POST /research` runs a bounded ReAct-style loop over exactly the three tools above. The
+model chooses which tool to call and in what order; application code retains control:
+
+1. The model emits one strict JSON tool or final action.
+2. Pydantic rejects unknown fields, missing arguments, and invalid values.
+3. Only names in the three-tool registry can execute.
+4. Tool observations return to the model, for at most six model steps.
+5. A successful final answer must name citation identifiers actually returned by
+   `search_docs`, and those identifiers must appear in the answer text.
+
+This guard proves **citation provenance**: the model cannot return a fabricated source id.
+It does not prove that every sentence is semantically supported by the cited passage. That
+claim-level grounding measurement belongs to the Day 5 corpus evaluation.
+
+Example:
+
+```bash
+curl -X POST http://127.0.0.1:8000/research \
+  -H 'Content-Type: application/json' \
+  -d '{"question":"What did Apple report about services revenue?"}'
+```
+
+If the model configuration is missing, the endpoint returns HTTP 503. Weak retrieval,
+fabricated citations, malformed model actions, and step exhaustion return an explicit
+research refusal instead of an unsupported answer.
 
 ## Price Data Tool
 
@@ -148,7 +180,7 @@ For the interview explanation and 10-minute self-quiz, see
 - [x] Day 1–2: FastAPI skeleton + `/ingest` + Chroma + `search_docs` (citations + refusal)
 - [x] Day 3 foundation: `get_price_data` cache-first wrapper
 - [x] Day 3 event study: `run_event_study` (pre-event bootstrap CAR CI + leakage check)
-- [ ] Day 4: ReAct agent loop over the 3 tools + `/research`
+- [x] Day 4: bounded ReAct agent loop over the 3 tools + `/research`
 - [x] Day 5 foundation: eval metric helpers + RAG refusal/citation regression tests
 - [ ] Day 5 corpus eval: labeled query set + numbers above
 - [ ] Day 6–7: Dockerize, polish, make public
