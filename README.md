@@ -10,16 +10,27 @@ citations, weak-evidence questions get refused, and the event-study tool is leak
 This is a standalone public MVP repo. It intentionally excludes private trading strategy,
 backtests, runbooks, live execution, broker automation, and proprietary data.
 
-## Eval (the headline — fill in as the harness lands)
+## Eval (offline reproducible baseline)
 
 | Metric | What it measures | Result |
 |---|---|---|
-| hit@k | retrieval: is the right passage in the top-k? | metric helper tested |
-| MRR | retrieval: how high is the right passage ranked? | metric helper tested |
-| citation-grounding rate | does every claim trace to a retrieved passage? | metric helper tested |
-| tool-call success rate | agent picks + calls the right tool | metric helper tested |
-| refusal-when-weak | refuses when evidence is insufficient | RAG behavior tested |
-| leakage check | event study uses no look-ahead data | pre-window assertion tested |
+| hit@1 | expected document is the first result | **1.00** (3 cases) |
+| MRR | rank of the expected document | **1.00** (3 cases) |
+| citation-grounding rate | accepted answers carry retrieved citations | **1.00** (3 accepted answers) |
+| tool-call success rate | expected tool dispatched successfully | **1.00** (4 calls) |
+| refusal accuracy | answerable vs weak-evidence decision is correct | **1.00** (4 cases) |
+| leakage guard rate | accepts clean baseline and rejects cutoff leak | **1.00** (2 checks) |
+
+These are deliberately small **offline smoke-baseline** results. Retrieval and refusal use
+real Chroma embeddings over three sanitized fixtures. Agent grounding and tool-call values use
+a deterministic observation-driven model to exercise the real ReAct loop; they measure system
+contracts, not live-LLM planning quality. See [eval/results.json](eval/results.json).
+
+Reproduce the checked-in result without credentials:
+
+```bash
+.venv/bin/python -m app.eval_harness --output eval/results.json
+```
 
 > "I built a RAG agent" is weak. "I built a RAG agent and characterized its citation-grounding
 > and retrieval quality on N queries, with a leakage-checked event-study tool" is the claim.
@@ -182,7 +193,7 @@ For the interview explanation and 10-minute self-quiz, see
 - [x] Day 3 event study: `run_event_study` (pre-event bootstrap CAR CI + leakage check)
 - [x] Day 4: bounded ReAct agent loop over the 3 tools + `/research`
 - [x] Day 5 foundation: eval metric helpers + RAG refusal/citation regression tests
-- [ ] Day 5 corpus eval: labeled query set + numbers above
+- [x] Day 5 corpus eval: isolated fixtures + reproducible offline metrics above
 - [ ] Day 6–7: Dockerize, polish, make public
 
 ## Explicitly out of scope (known production path, deliberately not built)

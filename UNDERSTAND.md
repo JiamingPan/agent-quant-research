@@ -156,3 +156,69 @@ fabricates an id, or fails to place the id in the answer text. That enforces pro
 careful not to overclaim semantic grounding, which is measured separately in the eval harness.
 The model interface is injected in tests, so all agent behavior is deterministic and no test
 spends API credits."
+
+---
+
+## Day 5 — Own the eval harness (10 minutes)
+
+### Trace one evaluation run
+
+```bash
+.venv/bin/python -m app.eval_harness --output eval/results.json
+```
+
+1. `app/eval_harness.py` validates `eval/corpus/manifest.json` and `eval/cases.json` with
+   Pydantic. Answerable cases require an expected document; refusal cases must not declare one.
+2. The harness creates an **ephemeral** cosine collection and ingests the three sanitized
+   fixtures through the real `rag.ingest`. It never writes them into the app's `.chroma` store.
+3. For the three answerable questions, the real `rag.search` ranks embedded chunks. The harness
+   computes hit@1 and MRR from the expected document positions.
+4. For all four questions, `OfflineEvalModel` requests `search_docs`, reads the real structured
+   observation, and either cites the top passage or refuses. The production `run_agent` still
+   performs argument validation, dispatch, citation registration, and final enforcement.
+5. Those runs produce refusal accuracy, citation-grounding rate, and tool-call success rate.
+6. The leakage check calls the real event-study assertion twice: once with dates strictly before
+   the cutoff and once with a date exactly at the cutoff that must raise.
+7. The result is sorted JSON with no timestamp or machine path, so rerunning it produces the
+   same `eval/results.json` diff.
+
+### Why every number is 1.00
+
+The corpus has only three deliberately distinct financial documents and one obvious off-topic
+question. The deterministic model is designed to test the agent contract, not to imitate model
+mistakes. Therefore 1.00 means the plumbing and these fixtures behave as specified.
+
+It does **not** mean retrieval is perfect on real filings, the refusal threshold is calibrated,
+citations semantically entail every claim, or a live LLM chooses the correct tool 100% of the
+time. Those require a larger labeled corpus, human grading, and model-specific live runs.
+
+### Five-question self-quiz
+
+Answer aloud before reading the expected points:
+
+1. Why use an ephemeral Chroma collection instead of the normal `.chroma` collection?
+2. What is the difference between hit@1 and MRR?
+3. Which metrics use real embedding behavior, and which are deterministic contract metrics?
+4. Why is a 1.00 citation-grounding rate not proof that every answer is factually supported?
+5. Why must you not tune the 0.25 refusal threshold using these four cases?
+
+Expected points:
+
+1. Isolation makes the eval repeatable and prevents fixture documents from polluting user data.
+2. Hit@1 asks whether the expected document is first; MRR gives partial credit when it appears
+   lower in the three-result ranking.
+3. Retrieval and refusal use real Chroma results; grounding and tool success exercise the real
+   loop with a deterministic model. Leakage uses the real assertion on synthetic dates.
+4. The guard proves that an accepted citation was retrieved, not semantic entailment per claim.
+5. Four easy cases would overfit the threshold and provide no reliable calibration evidence.
+
+### 60-second interview version
+
+"I turned the metric helpers into a reproducible offline evaluation. The harness validates a
+small labeled corpus, ingests it into an ephemeral Chroma collection, and measures hit@1, MRR,
+and refusal accuracy with the real embedding path. It then runs a deterministic model through
+the production ReAct loop to test tool dispatch and citation provenance without API cost or
+provider variance. I also test the event-study leakage assertion in both directions. The report
+is deterministic JSON, so it can be checked into CI. I report the perfect smoke scores honestly:
+they prove these contracts and fixtures work, not that a live model or real-world retrieval is
+perfect. The next statistical step is a larger labeled corpus and model-specific live evals."

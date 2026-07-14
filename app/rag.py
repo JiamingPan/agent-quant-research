@@ -9,7 +9,7 @@ Swap `embedding_function` for an API embedder later if you want; the interface i
 """
 from __future__ import annotations
 import os
-from typing import Optional
+from typing import Any, Optional
 
 import chromadb
 from .models import Citation
@@ -43,13 +43,19 @@ def _chunk(text: str) -> list[str]:
     return [text[i:i + CHUNK_CHARS] for i in range(0, max(1, len(text)), step) if text[i:i + CHUNK_CHARS].strip()]
 
 
-def ingest(path: str, doc_id: Optional[str] = None) -> tuple[str, int]:
+def ingest(
+    path: str,
+    doc_id: Optional[str] = None,
+    *,
+    collection: Any = None,
+) -> tuple[str, int]:
     """Chunk a file and add it to Chroma. Returns (doc_id, n_chunks)."""
+    active_collection = collection if collection is not None else _collection
     doc_id = doc_id or os.path.basename(path)
     chunks = _chunk(_read(path))
     if not chunks:
         return doc_id, 0
-    _collection.add(
+    active_collection.add(
         ids=[f"{doc_id}::{i}" for i in range(len(chunks))],
         documents=chunks,
         metadatas=[{"doc_id": doc_id, "chunk_id": i} for i in range(len(chunks))],
@@ -57,9 +63,15 @@ def ingest(path: str, doc_id: Optional[str] = None) -> tuple[str, int]:
     return doc_id, len(chunks)
 
 
-def search(query: str, k: int = 4) -> tuple[list[Citation], bool, Optional[str]]:
+def search(
+    query: str,
+    k: int = 4,
+    *,
+    collection: Any = None,
+) -> tuple[list[Citation], bool, Optional[str]]:
     """Retrieve top-k passages with citations. Returns (passages, refused, reason)."""
-    res = _collection.query(query_texts=[query], n_results=k)
+    active_collection = collection if collection is not None else _collection
+    res = active_collection.query(query_texts=[query], n_results=k)
     docs = res["documents"][0] if res["documents"] else []
     metas = res["metadatas"][0] if res["metadatas"] else []
     dists = res["distances"][0] if res["distances"] else []

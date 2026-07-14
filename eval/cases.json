@@ -1,0 +1,22 @@
+[
+  {
+    "question": "What did Apple report about record Services revenue?",
+    "expected_doc_id": "apple_services_excerpt",
+    "should_refuse": false
+  },
+  {
+    "question": "Which NVIDIA business benefited from accelerated computing and generative AI demand?",
+    "expected_doc_id": "nvidia_data_center_excerpt",
+    "should_refuse": false
+  },
+  {
+    "question": "What did the Federal Open Market Committee say about inflation and interest rates?",
+    "expected_doc_id": "fed_policy_excerpt",
+    "should_refuse": false
+  },
+  {
+    "question": "What ingredients and oven temperature should I use to bake sourdough bread?",
+    "expected_doc_id": null,
+    "should_refuse": true
+  }
+]

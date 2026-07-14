@@ -110,7 +110,7 @@ document id and refusal cases omit it.
 Create an ephemeral cosine collection, ingest every manifest document through `rag.ingest`, and
 define an eval `search_docs` adapter around
 `rag.search(query, k=k, collection=collection)`. Compute
-retrieval metrics on answerable cases. Run every case through `agent.run_agent` with a fresh
+hit@1 and three-result MRR on answerable cases. Run every case through `agent.run_agent` with a fresh
 `OfflineEvalModel` and the injected three-tool registry. Aggregate refusal, grounding, and tool
 records using the existing metric helpers. Exercise `_assert_no_baseline_leakage` once with safe
 dates and once with a cutoff leak that must raise.
@@ -143,7 +143,7 @@ Expected: the second run does not change the result.
 
 - [ ] **Step 1: Replace README placeholders with measured values**
 
-Report hit@3, MRR, citation-grounding rate, tool-call success rate, refusal accuracy, and leakage
+Report hit@1, MRR, citation-grounding rate, tool-call success rate, refusal accuracy, and leakage
 guard rate with case counts. Add the exact rerun command. State that retrieval/refusal use real
 Chroma behavior while agent/tool/grounding values are deterministic contract metrics.
 

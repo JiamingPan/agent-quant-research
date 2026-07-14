@@ -1,0 +1,23 @@
+{
+  "cases": {
+    "agent": 4,
+    "leakage_guard": 2,
+    "refusal": 4,
+    "retrieval": 3
+  },
+  "corpus_documents": 3,
+  "metrics": {
+    "citation_grounding_rate": 1.0,
+    "hit_at_1": 1.0,
+    "leakage_guard_rate": 1.0,
+    "mrr": 1.0,
+    "refusal_accuracy": 1.0,
+    "tool_call_success_rate": 1.0
+  },
+  "mode": "offline_contract",
+  "notes": [
+    "Retrieval and refusal metrics use real Chroma search over sanitized fixtures.",
+    "Agent grounding and tool metrics are deterministic contract checks, not live-model quality.",
+    "This small corpus is a reproducible smoke baseline, not a statistical benchmark."
+  ]
+}

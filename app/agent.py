@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Any, Literal, Protocol
+from typing import Any, Literal, Mapping, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
@@ -142,9 +142,13 @@ def _parse_action(raw: str) -> ToolAction | FinalAction:
         raise AgentActionError(str(exc)) from exc
 
 
-def _dispatch_tool(action: ToolAction) -> dict:
+def _dispatch_tool(
+    action: ToolAction,
+    tool_registry: Mapping[str, Any] | None = None,
+) -> dict:
+    active_registry = tool_registry if tool_registry is not None else TOOLS
     argument_model = TOOL_ARGUMENT_MODELS.get(action.name)
-    tool = TOOLS.get(action.name)
+    tool = active_registry.get(action.name)
     if argument_model is None or tool is None:
         return {
             "ok": False,
@@ -236,6 +240,8 @@ def run_agent(
     question: str,
     max_steps: int = 6,
     model: AgentModel | None = None,
+    *,
+    tool_registry: Mapping[str, Any] | None = None,
 ) -> dict:
     """Run a bounded model-tool loop and enforce citation provenance."""
     if not question.strip():
@@ -260,7 +266,7 @@ def run_agent(
         if isinstance(action, FinalAction):
             return _finalize(action, citation_registry)
 
-        observation = _dispatch_tool(action)
+        observation = _dispatch_tool(action, tool_registry=tool_registry)
         _register_citations(observation, citation_registry)
         messages.append(
             {

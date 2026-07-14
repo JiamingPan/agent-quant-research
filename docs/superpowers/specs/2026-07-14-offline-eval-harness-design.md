@@ -16,7 +16,7 @@ This increment includes:
 - Three small sanitized financial-document fixtures.
 - Labeled answerable and refusal cases stored as JSON.
 - An ephemeral Chroma collection that cannot alter the app's persistent collection.
-- Real retrieval measurements: hit@3 and mean reciprocal rank.
+- Real retrieval measurements: hit@1 and mean reciprocal rank over three results.
 - Real RAG refusal accuracy on answerable and off-topic cases.
 - Real agent-loop contract measurements using an injected deterministic eval model.
 - Citation-grounding and tool-call-success metrics from those offline agent runs.
@@ -74,7 +74,7 @@ external LLM independently chooses the correct tool. The report and README state
 
 The result contains:
 
-- `hit_at_3`: expected document present in the first three retrieved passages.
+- `hit_at_1`: expected document is the first retrieved passage.
 - `mrr`: mean reciprocal rank of the expected document.
 - `refusal_accuracy`: correct refusal/non-refusal decisions across all cases.
 - `citation_grounding_rate`: fraction of accepted offline-agent answers carrying returned
