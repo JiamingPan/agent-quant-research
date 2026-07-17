@@ -361,3 +361,19 @@ def test_system_prompt_describes_arguments_for_all_three_tools():
     assert '"name":"run_event_study"' in system_prompt
     assert '"event_date":"2026-01-15"' in system_prompt
     assert '"window":5' in system_prompt
+
+
+def test_system_prompt_distinguishes_raw_prices_from_event_study():
+    model = ScriptedModel(
+        [
+            '{"type":"final","answer":"Insufficient evidence.","citation_ids":[],'
+            '"confidence":0.0,"refused":true}'
+        ]
+    )
+
+    agent.run_agent("Evaluate SPY around an event", model=model)
+
+    system_prompt = model.messages[0][0]["content"]
+    assert "get_price_data returns raw historical bars" in system_prompt
+    assert "run_event_study loads its own price data" in system_prompt
+    assert "do not call get_price_data first" in system_prompt
