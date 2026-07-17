@@ -204,6 +204,22 @@ def _ephemeral_collection() -> Any:
     )
 
 
+def load_eval_collection(
+    corpus_dir: Path = DEFAULT_CORPUS_DIR,
+    collection: Any = None,
+) -> tuple[Any, int]:
+    """Ingest the sanitized eval corpus into an isolated collection."""
+    corpus_dir = Path(corpus_dir)
+    manifest = _load_models(corpus_dir / "manifest.json", CorpusEntry)
+    active_collection = collection if collection is not None else _ephemeral_collection()
+    for item in manifest:
+        document_path = corpus_dir / item.filename
+        if not document_path.is_file():
+            raise FileNotFoundError(f"missing eval corpus file: {item.filename}")
+        rag.ingest(str(document_path), item.doc_id, collection=active_collection)
+    return active_collection, len(manifest)
+
+
 def _leakage_guard_result() -> dict[str, float | int]:
     cutoff = pd.Timestamp("2026-01-08", tz="UTC")
     safe_dates = pd.DatetimeIndex(
@@ -304,19 +320,12 @@ def run_offline_eval(
     """Run the reproducible offline suite and return a JSON-safe result."""
     corpus_dir = Path(corpus_dir)
     cases_path = Path(cases_path)
-    manifest = _load_models(corpus_dir / "manifest.json", CorpusEntry)
     cases = _load_models(cases_path, EvalCase)
     orchestration_cases = _load_models(
         Path(orchestration_cases_path),
         OrchestrationCase,
     )
-    active_collection = collection if collection is not None else _ephemeral_collection()
-
-    for item in manifest:
-        document_path = corpus_dir / item.filename
-        if not document_path.is_file():
-            raise FileNotFoundError(f"missing eval corpus file: {item.filename}")
-        rag.ingest(str(document_path), item.doc_id, collection=active_collection)
+    active_collection, corpus_count = load_eval_collection(corpus_dir, collection)
 
     def eval_search(query: str, k: int = RETRIEVAL_K) -> dict:
         passages, refused, reason = rag.search(
@@ -372,7 +381,7 @@ def run_offline_eval(
     orchestration = _run_orchestration_contracts(orchestration_cases, eval_search)
     return {
         "mode": "offline_contract",
-        "corpus_documents": len(manifest),
+        "corpus_documents": corpus_count,
         "cases": {
             "retrieval": len(answerable_cases),
             "agent": len(cases),
