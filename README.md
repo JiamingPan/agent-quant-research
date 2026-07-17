@@ -20,11 +20,16 @@ backtests, runbooks, live execution, broker automation, and proprietary data.
 | tool-call success rate | expected tool dispatched successfully | **1.00** (4 calls) |
 | refusal accuracy | answerable vs weak-evidence decision is correct | **1.00** (4 cases) |
 | leakage guard rate | accepts clean baseline and rejects cutoff leak | **1.00** (2 checks) |
+| trajectory contract rate | scripted tool order matches the public trace | **1.00** (5 cases) |
+| trace completeness rate | every tool attempt has all public trace fields | **1.00** (7 attempts) |
+| recovery contract rate | injected failure reaches the expected recovery action | **1.00** (1 case) |
+| mean tool steps | attempted tool actions per orchestration case | **1.40** (5 cases) |
 
 These are deliberately small **offline smoke-baseline** results. Retrieval and refusal use
-real Chroma embeddings over three sanitized fixtures. Agent grounding and tool-call values use
-a deterministic observation-driven model to exercise the real ReAct loop; they measure system
-contracts, not live-LLM planning quality. See [eval/results.json](eval/results.json).
+real Chroma embeddings over three sanitized fixtures. Agent grounding, tool-call, trace, and
+trajectory values use deterministic observation-driven models to exercise the real ReAct loop;
+they measure system contracts, not live-LLM planning quality. See
+[eval/results.json](eval/results.json).
 
 Reproduce the checked-in result without credentials:
 
@@ -42,9 +47,12 @@ Client / API
      │
 FastAPI + Pydantic        /ingest  /research  /event-study  /documents
      │
-Agent (ReAct, 3 tools) ──▶ RAG core (Chroma): retrieve → cite → refuse-if-weak
+Python orchestration runtime
+     ├──▶ LLM routing policy: choose next action
+     ├──▶ Pydantic validation + bounded synchronous execution
+     └──▶ 3 tools, including RAG (Chroma): retrieve → cite → refuse-if-weak
      │
-Eval harness: hit@k · MRR · grounding · tool success · refusal · leakage
+Eval harness: retrieval · grounding · trajectories · recovery · refusal · leakage
 ```
 
 ## The 3 tools (exactly three)
@@ -113,6 +121,9 @@ model chooses which tool to call and in what order; application code retains con
 4. Tool observations return to the model, for at most six model steps.
 5. A successful final answer must name citation identifiers actually returned by
    `search_docs`, and those identifiers must appear in the answer text.
+6. The response exposes a bounded tool trace: step, selected tool, normalized arguments,
+   success/failure, and a sanitized error category. It never exposes model chain-of-thought or
+   full tool result payloads.
 
 This guard proves **citation provenance**: the model cannot return a fabricated source id.
 It does not prove that every sentence is semantically supported by the cited passage. That
@@ -129,6 +140,36 @@ curl -X POST http://127.0.0.1:8000/research \
 If the model configuration is missing, the endpoint returns HTTP 503. Weak retrieval,
 fabricated citations, malformed model actions, and step exhaustion return an explicit
 research refusal instead of an unsupported answer.
+
+### Orchestration ownership
+
+The orchestration is hybrid. The LLM chooses the semantic next action: which tool to call,
+with which arguments, and whether to call another tool or finalize. Python retains operational
+control: it validates the action, executes one tool synchronously, returns the observation,
+records the public trace, enforces the step budget, and accepts or refuses the final result.
+
+There is no separate queue or background scheduler in this MVP. Scheduling is the direct
+one-tool-at-a-time dispatch inside `run_agent`. A separate scheduler would become justified for
+parallel, long-running, resumable, or resource-constrained jobs.
+
+### Optional live model-routing smoke test
+
+The checked-in metrics are deterministic. To make a small provider-backed check of actual model
+tool selection, configure an OpenAI-compatible endpoint and run:
+
+```bash
+export OPENAI_API_KEY="your-key"
+export AGENT_MODEL="your-model"
+# Optional:
+# export OPENAI_BASE_URL="https://provider.example/v1"
+.venv/bin/python -m app.live_eval
+```
+
+The command uses two short cases, deterministic price/event fixtures, and an ephemeral Chroma
+collection. Each case is capped at three model steps, so the default run can make at most six
+model API calls. It reports only tool sequences, refusal state, step count, and latency; it does
+not persist prompts, answers, citations, raw observations, or credentials. This is a smoke test,
+not a statistically meaningful model benchmark, and it is deliberately excluded from CI.
 
 ## Price Data Tool
 
@@ -194,6 +235,7 @@ For the interview explanation and 10-minute self-quiz, see
 - [x] Day 4: bounded ReAct agent loop over the 3 tools + `/research`
 - [x] Day 5 foundation: eval metric helpers + RAG refusal/citation regression tests
 - [x] Day 5 corpus eval: isolated fixtures + reproducible offline metrics above
+- [x] Day 6: orchestration traces + all-three-tool trajectory/recovery eval + capped live smoke
 - [ ] Day 6–7: Dockerize, polish, make public
 
 ## Explicitly out of scope (known production path, deliberately not built)

@@ -222,3 +222,85 @@ provider variance. I also test the event-study leakage assertion in both directi
 is deterministic JSON, so it can be checked into CI. I report the perfect smoke scores honestly:
 they prove these contracts and fixtures work, not that a live model or real-world retrieval is
 perfect. The next statistical step is a larger labeled corpus and model-specific live evals."
+
+---
+
+## Day 6 — Own AI orchestration (10 minutes)
+
+### The control split
+
+For this MVP, orchestration is not synonymous with "the LLM does everything." It is a hybrid:
+
+```text
+user question
+    ↓
+Python calls the LLM
+    ↓
+LLM proposes the next semantic action
+    ↓
+Python validates and synchronously executes one allowed tool
+    ↓
+Python returns the structured observation to the LLM
+    ↓
+LLM proposes another tool or a final response
+    ↓
+Python enforces citations, the step budget, and termination
+```
+
+The LLM is the **routing policy**: it decides which evidence it needs and the order in which to
+request it. `run_agent` is the **orchestration runtime**: it owns state transitions and safety
+boundaries. `_dispatch_tool` is the simple **scheduler/executor**: it runs one validated call at
+a time in the same process. These responsibilities live in one module because there is no queue,
+parallelism, persistence, or long-running work in this MVP.
+
+The public trace records step number, tool, normalized arguments, success/failure, and a
+sanitized error. It intentionally excludes raw model messages, chain-of-thought, and full tool
+results. Observability does not require exposing private reasoning or large/sensitive payloads.
+
+### Offline versus live evaluation
+
+The five offline orchestration cases script known tool trajectories. They prove that Python can
+validate, execute, trace, order, and recover across all three tools. They do **not** prove that a
+real LLM chooses those trajectories from natural-language questions.
+
+`python -m app.live_eval` replaces the scripted policy with the configured API model for two
+small cases. Python still scores the objective tool sequence. Another LLM is not needed to judge
+whether `search_docs` was called before `run_event_study`; exact code can measure that without
+judge variance or extra cost.
+
+### Six-question self-quiz
+
+Answer aloud before reading the expected points:
+
+1. Which decisions belong to the LLM?
+2. Which controls remain deterministic?
+3. Why does one loop act as both orchestrator and scheduler here?
+4. Why does the trace omit model reasoning and full observations?
+5. What does a 1.00 offline trajectory contract rate prove, and what does it not prove?
+6. Why should objective tool routing be code-scored rather than LLM-judged?
+
+Expected points:
+
+1. The LLM proposes the next tool, its arguments, and whether to continue or finalize.
+2. Python owns the allowlist, validation, execution, observation delivery, citations, step cap,
+   and termination.
+3. Calls are short, synchronous, sequential, and in-process; a queue/runtime would add no useful
+   capability yet.
+4. Operators need action metadata for debugging, not hidden reasoning or potentially sensitive
+   and very large tool bodies.
+5. It proves the runtime follows five scripted contracts. It does not measure live model routing
+   intelligence or real-world task success.
+6. Expected and actual tool names and order are exact structured values; an LLM judge would add
+   cost and nondeterminism without adding information.
+
+### 60-second interview version
+
+"I used hybrid orchestration. The LLM is the dynamic routing policy: it chooses among document
+search, price retrieval, and event study, and it can adapt after each tool observation. A bounded
+Python runtime remains in control: strict schemas validate every action, an allowlist prevents
+arbitrary tools, dispatch is synchronous, and code enforces citations and a six-step budget. I
+added a public execution trace without exposing chain-of-thought, then evaluated all three tools,
+an ordered multi-tool path, and recovery after an injected failure. Offline cases test runtime
+contracts for free; a separate two-case live API smoke test measures actual model routing with a
+hard six-call ceiling. I would add a durable scheduler only when jobs become parallel,
+long-running, or resumable."

@@ -2,6 +2,7 @@
   "cases": {
     "agent": 4,
     "leakage_guard": 2,
+    "orchestration": 5,
     "refusal": 4,
     "retrieval": 3
   },
@@ -10,14 +11,19 @@
     "citation_grounding_rate": 1.0,
     "hit_at_1": 1.0,
     "leakage_guard_rate": 1.0,
+    "mean_tool_steps": 1.4,
     "mrr": 1.0,
+    "recovery_contract_rate": 1.0,
     "refusal_accuracy": 1.0,
-    "tool_call_success_rate": 1.0
+    "tool_call_success_rate": 1.0,
+    "trace_completeness_rate": 1.0,
+    "trajectory_contract_rate": 1.0
   },
   "mode": "offline_contract",
   "notes": [
     "Retrieval and refusal metrics use real Chroma search over sanitized fixtures.",
     "Agent grounding and tool metrics are deterministic contract checks, not live-model quality.",
+    "Orchestration metrics cover scripted trajectories and recovery, not model routing intelligence.",
     "This small corpus is a reproducible smoke baseline, not a statistical benchmark."
   ]
 }
