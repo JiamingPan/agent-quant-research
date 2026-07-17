@@ -14,13 +14,18 @@ from . import agent, rag, tools
 from .eval import (
     citation_grounding_rate,
     evaluate_retrieval_cases,
+    mean_tool_steps,
+    recovery_contract_rate,
     refusal_accuracy,
     tool_call_success_rate,
+    trace_completeness_rate,
+    trajectory_contract_rate,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CORPUS_DIR = REPO_ROOT / "eval" / "corpus"
 DEFAULT_CASES_PATH = REPO_ROOT / "eval" / "cases.json"
+DEFAULT_ORCHESTRATION_CASES_PATH = REPO_ROOT / "eval" / "orchestration_cases.json"
 DEFAULT_OUTPUT_PATH = REPO_ROOT / "eval" / "results.json"
 RETRIEVAL_K = 3
 
@@ -46,6 +51,19 @@ class EvalCase(_StrictModel):
         if not self.should_refuse and not self.expected_doc_id:
             raise ValueError("answerable cases require expected_doc_id")
         return self
+
+
+class OrchestrationStep(_StrictModel):
+    tool: str = Field(min_length=1)
+    arguments: dict[str, Any]
+    should_succeed: bool
+
+
+class OrchestrationCase(_StrictModel):
+    case_id: str = Field(min_length=1)
+    question: str = Field(min_length=1)
+    steps: list[OrchestrationStep] = Field(min_length=1)
+    recovery_required: bool
 
 
 class OfflineEvalModel:
@@ -102,6 +120,47 @@ class OfflineEvalModel:
             },
             separators=(",", ":"),
         )
+
+
+class OrchestrationEvalModel:
+    """Scripted model used to verify the runtime's trajectory contracts."""
+
+    def __init__(self, case: OrchestrationCase):
+        self.case = case
+        self._next_step = 0
+        self._citation_id: str | None = None
+
+    def complete(self, messages: list[dict[str, str]]) -> str:
+        if messages and messages[-1].get("content", "").startswith("TOOL_OBSERVATION\n"):
+            observation = _last_tool_observation(messages)
+            if observation.get("ok") and observation.get("tool") == "search_docs":
+                result = observation.get("result")
+                result = result if isinstance(result, dict) else {}
+                passages = result.get("passages") or []
+                if passages:
+                    citation_id = str(passages[0].get("citation", "")).strip()
+                    self._citation_id = citation_id or None
+
+        if self._next_step < len(self.case.steps):
+            step = self.case.steps[self._next_step]
+            self._next_step += 1
+            return json.dumps(
+                {"type": "tool", "name": step.tool, "arguments": step.arguments},
+                separators=(",", ":"),
+            )
+
+        if self._citation_id:
+            return json.dumps(
+                {
+                    "type": "final",
+                    "answer": f"Retrieved supporting evidence [{self._citation_id}].",
+                    "citation_ids": [self._citation_id],
+                    "confidence": 1.0,
+                    "refused": False,
+                },
+                separators=(",", ":"),
+            )
+        return _final_refusal("Completed tool contract case without document evidence.")
 
 
 def _last_tool_observation(messages: list[dict[str, str]]) -> dict:
@@ -163,9 +222,82 @@ def _leakage_guard_result() -> dict[str, float | int]:
     return {"n_checks": 2, "n_passed": passed, "rate": passed / 2}
 
 
+def fixed_price_data(ticker: str, start: str, end: str) -> dict:
+    """Deterministic price fixture for orchestration evaluation."""
+    if ticker == "FAIL":
+        raise RuntimeError("injected unavailable price fixture")
+    return {
+        "ticker": ticker,
+        "start": start,
+        "end": end,
+        "source": "eval_fixture",
+        "n_rows": 2,
+        "rows": [],
+    }
+
+
+def fixed_event_study(ticker: str, event_date: str, window: int = 5) -> dict:
+    """Deterministic event-study fixture for orchestration evaluation."""
+    return {
+        "ticker": ticker,
+        "event_date": event_date,
+        "window": window,
+        "source": "eval_fixture",
+        "car_bps": 12.0,
+    }
+
+
+def _run_orchestration_contracts(
+    cases: list[OrchestrationCase],
+    search_fn: Any,
+) -> dict[str, float]:
+    registry = {
+        "search_docs": search_fn,
+        "get_price_data": fixed_price_data,
+        "run_event_study": fixed_event_study,
+    }
+    trajectories: list[dict[str, object]] = []
+    traces: list[list[dict[str, object]]] = []
+    recoveries: list[dict[str, object]] = []
+
+    for case in cases:
+        result = agent.run_agent(
+            case.question,
+            max_steps=len(case.steps) + 1,
+            model=OrchestrationEvalModel(case),
+            tool_registry=registry,
+        )
+        trace = result["trace"]
+        expected_tools = [step.tool for step in case.steps]
+        expected_success = [step.should_succeed for step in case.steps]
+        actual_tools = [str(entry["tool"]) for entry in trace]
+        actual_success = [bool(entry["ok"]) for entry in trace]
+        trajectories.append({"expected": expected_tools, "actual": actual_tools})
+        traces.append(trace)
+        recoveries.append(
+            {
+                "required": case.recovery_required,
+                "recovered": (
+                    actual_tools == expected_tools
+                    and actual_success == expected_success
+                    and False in actual_success
+                    and any(actual_success[actual_success.index(False) + 1 :])
+                ),
+            }
+        )
+
+    return {
+        "trajectory_contract_rate": trajectory_contract_rate(trajectories),
+        "trace_completeness_rate": trace_completeness_rate(traces),
+        "recovery_contract_rate": recovery_contract_rate(recoveries),
+        "mean_tool_steps": mean_tool_steps(traces),
+    }
+
+
 def run_offline_eval(
     corpus_dir: Path = DEFAULT_CORPUS_DIR,
     cases_path: Path = DEFAULT_CASES_PATH,
+    orchestration_cases_path: Path = DEFAULT_ORCHESTRATION_CASES_PATH,
     *,
     collection: Any = None,
 ) -> dict:
@@ -174,6 +306,10 @@ def run_offline_eval(
     cases_path = Path(cases_path)
     manifest = _load_models(corpus_dir / "manifest.json", CorpusEntry)
     cases = _load_models(cases_path, EvalCase)
+    orchestration_cases = _load_models(
+        Path(orchestration_cases_path),
+        OrchestrationCase,
+    )
     active_collection = collection if collection is not None else _ephemeral_collection()
 
     for item in manifest:
@@ -233,6 +369,7 @@ def run_offline_eval(
         call_records.extend(model.call_records)
 
     leakage = _leakage_guard_result()
+    orchestration = _run_orchestration_contracts(orchestration_cases, eval_search)
     return {
         "mode": "offline_contract",
         "corpus_documents": len(manifest),
@@ -241,6 +378,7 @@ def run_offline_eval(
             "agent": len(cases),
             "refusal": len(cases),
             "leakage_guard": int(leakage["n_checks"]),
+            "orchestration": len(orchestration_cases),
         },
         "metrics": {
             "hit_at_1": float(retrieval_at_1["hit_at_k"]),
@@ -249,10 +387,12 @@ def run_offline_eval(
             "tool_call_success_rate": tool_call_success_rate(call_records),
             "refusal_accuracy": refusal_accuracy(refusal_records),
             "leakage_guard_rate": float(leakage["rate"]),
+            **orchestration,
         },
         "notes": [
             "Retrieval and refusal metrics use real Chroma search over sanitized fixtures.",
             "Agent grounding and tool metrics are deterministic contract checks, not live-model quality.",
+            "Orchestration metrics cover scripted trajectories and recovery, not model routing intelligence.",
             "This small corpus is a reproducible smoke baseline, not a statistical benchmark.",
         ],
     }

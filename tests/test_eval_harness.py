@@ -231,6 +231,7 @@ def test_run_offline_eval_aggregates_stable_contract_metrics(tmp_path):
         "agent": 2,
         "refusal": 2,
         "leakage_guard": 2,
+        "orchestration": 5,
     }
     assert result["metrics"] == {
         "hit_at_1": 1.0,
@@ -239,5 +240,9 @@ def test_run_offline_eval_aggregates_stable_contract_metrics(tmp_path):
         "tool_call_success_rate": 1.0,
         "refusal_accuracy": 1.0,
         "leakage_guard_rate": 1.0,
+        "trajectory_contract_rate": 1.0,
+        "trace_completeness_rate": 1.0,
+        "recovery_contract_rate": 1.0,
+        "mean_tool_steps": 1.4,
     }
     assert str(tmp_path) not in json.dumps(result)

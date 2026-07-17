@@ -1,0 +1,91 @@
+[
+  {
+    "case_id": "search_only",
+    "question": "What did Apple report about Services revenue?",
+    "steps": [
+      {
+        "tool": "search_docs",
+        "arguments": {"query": "Apple Services revenue", "k": 3},
+        "should_succeed": true
+      }
+    ],
+    "recovery_required": false
+  },
+  {
+    "case_id": "price_only",
+    "question": "Retrieve SPY prices for the first week of January 2026.",
+    "steps": [
+      {
+        "tool": "get_price_data",
+        "arguments": {
+          "ticker": "SPY",
+          "start": "2026-01-02",
+          "end": "2026-01-09"
+        },
+        "should_succeed": true
+      }
+    ],
+    "recovery_required": false
+  },
+  {
+    "case_id": "event_only",
+    "question": "Run a one-day SPY event study around January 7, 2026.",
+    "steps": [
+      {
+        "tool": "run_event_study",
+        "arguments": {
+          "ticker": "SPY",
+          "event_date": "2026-01-07",
+          "window": 1
+        },
+        "should_succeed": true
+      }
+    ],
+    "recovery_required": false
+  },
+  {
+    "case_id": "search_then_event",
+    "question": "Summarize the Fed policy excerpt and evaluate SPY around January 7, 2026.",
+    "steps": [
+      {
+        "tool": "search_docs",
+        "arguments": {
+          "query": "Federal Reserve inflation interest rates",
+          "k": 3
+        },
+        "should_succeed": true
+      },
+      {
+        "tool": "run_event_study",
+        "arguments": {
+          "ticker": "SPY",
+          "event_date": "2026-01-07",
+          "window": 1
+        },
+        "should_succeed": true
+      }
+    ],
+    "recovery_required": false
+  },
+  {
+    "case_id": "failure_then_search",
+    "question": "Recover from unavailable price data and retrieve Apple Services evidence.",
+    "steps": [
+      {
+        "tool": "get_price_data",
+        "arguments": {
+          "ticker": "FAIL",
+          "start": "2026-01-02",
+          "end": "2026-01-09"
+        },
+        "should_succeed": false
+      },
+      {
+        "tool": "search_docs",
+        "arguments": {"query": "Apple Services revenue", "k": 3},
+        "should_succeed": true
+      }
+    ],
+    "recovery_required": true
+  }
+]

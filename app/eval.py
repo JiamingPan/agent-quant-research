@@ -93,3 +93,41 @@ def refusal_accuracy(cases: Sequence[Mapping[str, bool]]) -> float:
     for case in cases:
         correct += int(case.get("should_refuse") == case.get("refused"))
     return correct / len(cases)
+
+
+def trajectory_contract_rate(records: Sequence[Mapping[str, object]]) -> float:
+    """Fraction of scripted cases whose recorded tool order is exact."""
+    if not records:
+        return 0.0
+    matches = sum(
+        record.get("expected") == record.get("actual") for record in records
+    )
+    return matches / len(records)
+
+
+def trace_completeness_rate(
+    traces: Sequence[Sequence[Mapping[str, object]]],
+) -> float:
+    """Fraction of tool attempts containing every public trace field."""
+    entries = [entry for trace in traces for entry in trace]
+    if not entries:
+        return 0.0
+    required = {"step", "tool", "arguments", "ok", "error"}
+    complete = sum(required.issubset(entry.keys()) for entry in entries)
+    return complete / len(entries)
+
+
+def recovery_contract_rate(records: Sequence[Mapping[str, object]]) -> float:
+    """Fraction of scripted recovery cases that reached the expected next action."""
+    required = [record for record in records if bool(record.get("required"))]
+    if not required:
+        return 0.0
+    recovered = sum(bool(record.get("recovered")) for record in required)
+    return recovered / len(required)
+
+
+def mean_tool_steps(traces: Sequence[Sequence[Mapping[str, object]]]) -> float:
+    """Mean number of attempted tool actions per orchestration case."""
+    if not traces:
+        return 0.0
+    return sum(len(trace) for trace in traces) / len(traces)

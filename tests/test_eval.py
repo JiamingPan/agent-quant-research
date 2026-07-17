@@ -4,10 +4,14 @@ from app.eval import (
     citation_grounding_rate,
     evaluate_retrieval_cases,
     hit_at_k,
+    mean_tool_steps,
     mean_reciprocal_rank,
     reciprocal_rank,
+    recovery_contract_rate,
     refusal_accuracy,
     tool_call_success_rate,
+    trace_completeness_rate,
+    trajectory_contract_rate,
 )
 
 RETRIEVAL_EVAL_CASES = [
@@ -93,3 +97,42 @@ def test_retrieval_eval_cases_score_expected_source_docs():
         "hit_at_k": 1.0,
         "mrr": 0.75,
     }
+
+
+def test_orchestration_contract_metrics():
+    trajectories = [
+        {"expected": ["search_docs"], "actual": ["search_docs"]},
+        {
+            "expected": ["search_docs", "run_event_study"],
+            "actual": ["run_event_study", "search_docs"],
+        },
+    ]
+    traces = [
+        [
+            {
+                "step": 1,
+                "tool": "search_docs",
+                "arguments": {},
+                "ok": True,
+                "error": None,
+            }
+        ],
+        [
+            {
+                "step": 1,
+                "tool": "get_price_data",
+                "arguments": {},
+                "ok": False,
+                "error": "tool failed: RuntimeError",
+            }
+        ],
+    ]
+    recoveries = [
+        {"required": True, "recovered": True},
+        {"required": False, "recovered": False},
+    ]
+
+    assert trajectory_contract_rate(trajectories) == 0.5
+    assert trace_completeness_rate(traces) == 1.0
+    assert recovery_contract_rate(recoveries) == 1.0
+    assert mean_tool_steps(traces) == 1.0
