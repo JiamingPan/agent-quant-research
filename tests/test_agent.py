@@ -54,6 +54,16 @@ def test_run_agent_retrieves_then_returns_grounded_answer(monkeypatch):
     assert result["answer"] == "Services reached a record [apple::2]."
     assert result["confidence"] == 0.9
     assert result["citations"] == [_citation()]
+    assert result["trace"] == [
+        {
+            "step": 1,
+            "tool": "search_docs",
+            "arguments": {"query": "Apple services", "k": 4},
+            "ok": True,
+            "error": None,
+        }
+    ]
+    assert result["steps_used"] == 2
 
 
 def test_model_can_call_price_then_search_before_answer(monkeypatch):
@@ -115,6 +125,23 @@ def test_unknown_tool_is_observed_and_model_can_recover(monkeypatch):
 
     assert result["refused"] is False
     assert "unknown tool: trade_stock" in model.messages[1][-1]["content"]
+    assert result["trace"] == [
+        {
+            "step": 1,
+            "tool": "trade_stock",
+            "arguments": {"ticker": "AAPL"},
+            "ok": False,
+            "error": "unknown tool: trade_stock",
+        },
+        {
+            "step": 2,
+            "tool": "search_docs",
+            "arguments": {"query": "Apple", "k": 4},
+            "ok": True,
+            "error": None,
+        },
+    ]
+    assert result["steps_used"] == 3
 
 
 def test_invalid_arguments_are_observed_and_model_can_recover(monkeypatch):
@@ -233,6 +260,23 @@ def test_max_steps_exhaustion_refuses(monkeypatch):
     assert result["refused"] is True
     assert result["confidence"] == 0.0
     assert "maximum 2 steps" in result["answer"]
+    assert result["trace"] == [
+        {
+            "step": 1,
+            "tool": "search_docs",
+            "arguments": {"query": "Apple", "k": 4},
+            "ok": True,
+            "error": None,
+        },
+        {
+            "step": 2,
+            "tool": "search_docs",
+            "arguments": {"query": "Apple", "k": 4},
+            "ok": True,
+            "error": None,
+        },
+    ]
+    assert result["steps_used"] == 2
 
 
 def test_research_endpoint_returns_agent_result(monkeypatch):
@@ -244,6 +288,16 @@ def test_research_endpoint_returns_agent_result(monkeypatch):
             "citations": [_citation()],
             "confidence": 0.9,
             "refused": False,
+            "trace": [
+                {
+                    "step": 1,
+                    "tool": "search_docs",
+                    "arguments": {"query": "Apple services", "k": 4},
+                    "ok": True,
+                    "error": None,
+                }
+            ],
+            "steps_used": 2,
         },
     )
 
@@ -259,6 +313,16 @@ def test_research_endpoint_returns_agent_result(monkeypatch):
         "citations": [_citation()],
         "confidence": 0.9,
         "refused": False,
+        "trace": [
+            {
+                "step": 1,
+                "tool": "search_docs",
+                "arguments": {"query": "Apple services", "k": 4},
+                "ok": True,
+                "error": None,
+            }
+        ],
+        "steps_used": 2,
     }
 
 

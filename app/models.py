@@ -36,12 +36,22 @@ class ResearchRequest(BaseModel):
     question: str
 
 
+class AgentTraceStep(BaseModel):
+    step: int = Field(..., ge=1)
+    tool: str
+    arguments: dict[str, object]
+    ok: bool
+    error: Optional[str] = None
+
+
 class ResearchResponse(BaseModel):
     question: str
     answer: str
     citations: list[Citation]
     confidence: float
     refused: bool = False
+    trace: list[AgentTraceStep] = Field(default_factory=list)
+    steps_used: int = Field(0, ge=0)
 
 
 class EventStudyRequest(BaseModel):

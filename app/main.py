@@ -4,7 +4,7 @@ from fastapi import FastAPI, HTTPException
 from . import agent, rag, tools
 from .models import (
     IngestRequest, IngestResponse, SearchResponse, Citation,
-    ResearchRequest, ResearchResponse, EventStudyRequest, DocumentInfo,
+    ResearchRequest, ResearchResponse, AgentTraceStep, EventStudyRequest, DocumentInfo,
 )
 
 app = FastAPI(title="Agent Quant Research", version="0.1.0")
@@ -54,6 +54,8 @@ def research(req: ResearchRequest):
         citations=[Citation(**item) for item in out["citations"]],
         confidence=out["confidence"],
         refused=out["refused"],
+        trace=[AgentTraceStep(**item) for item in out["trace"]],
+        steps_used=out["steps_used"],
     )
 
 

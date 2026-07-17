@@ -153,6 +153,7 @@ def _dispatch_tool(
         return {
             "ok": False,
             "tool": action.name,
+            "arguments": dict(action.arguments),
             "error": f"unknown tool: {action.name}",
         }
 
@@ -162,18 +163,26 @@ def _dispatch_tool(
         return {
             "ok": False,
             "tool": action.name,
+            "arguments": dict(action.arguments),
             "error": f"invalid arguments: {exc}",
         }
 
+    normalized_arguments = arguments.model_dump()
     try:
-        result = tool(**arguments.model_dump())
+        result = tool(**normalized_arguments)
     except Exception as exc:
         return {
             "ok": False,
             "tool": action.name,
+            "arguments": normalized_arguments,
             "error": f"tool failed: {type(exc).__name__}: {exc}",
         }
-    return {"ok": True, "tool": action.name, "result": result}
+    return {
+        "ok": True,
+        "tool": action.name,
+        "arguments": normalized_arguments,
+        "result": result,
+    }
 
 
 def _register_citations(observation: dict, registry: dict[str, dict]) -> None:
@@ -186,34 +195,80 @@ def _register_citations(observation: dict, registry: dict[str, dict]) -> None:
             registry[citation_id] = passage
 
 
-def _refusal(reason: str) -> dict:
+def _sanitized_trace_error(observation: dict) -> str | None:
+    error = str(observation.get("error") or "")
+    if not error:
+        return None
+    if error.startswith("invalid arguments:"):
+        return "invalid arguments"
+    if error.startswith("tool failed:"):
+        parts = error.split(":", 2)
+        return ":".join(parts[:2])
+    return error
+
+
+def _trace_entry(step: int, action: ToolAction, observation: dict) -> dict:
+    return {
+        "step": step,
+        "tool": action.name,
+        "arguments": dict(observation.get("arguments") or action.arguments),
+        "ok": bool(observation.get("ok")),
+        "error": _sanitized_trace_error(observation),
+    }
+
+
+def _refusal(
+    reason: str,
+    *,
+    trace: list[dict] | None = None,
+    steps_used: int = 0,
+) -> dict:
     return {
         "answer": reason,
         "citations": [],
         "confidence": 0.0,
         "refused": True,
+        "trace": list(trace or []),
+        "steps_used": steps_used,
     }
 
 
-def _finalize(action: FinalAction, registry: dict[str, dict]) -> dict:
+def _finalize(
+    action: FinalAction,
+    registry: dict[str, dict],
+    trace: list[dict],
+    steps_used: int,
+) -> dict:
     if action.refused:
         return {
             "answer": action.answer,
             "citations": [],
             "confidence": action.confidence,
             "refused": True,
+            "trace": list(trace),
+            "steps_used": steps_used,
         }
     if not action.citation_ids:
-        return _refusal("Refused: the answer did not cite retrieved evidence.")
+        return _refusal(
+            "Refused: the answer did not cite retrieved evidence.",
+            trace=trace,
+            steps_used=steps_used,
+        )
 
     citations: list[dict] = []
     seen: set[str] = set()
     for citation_id in action.citation_ids:
         if citation_id not in registry:
-            return _refusal(f"Refused: citation {citation_id!r} was not retrieved.")
+            return _refusal(
+                f"Refused: citation {citation_id!r} was not retrieved.",
+                trace=trace,
+                steps_used=steps_used,
+            )
         if citation_id not in action.answer:
             return _refusal(
-                f"Refused: citation {citation_id!r} is missing from the answer text."
+                f"Refused: citation {citation_id!r} is missing from the answer text.",
+                trace=trace,
+                steps_used=steps_used,
             )
         if citation_id not in seen:
             citations.append(registry[citation_id])
@@ -224,10 +279,12 @@ def _finalize(action: FinalAction, registry: dict[str, dict]) -> dict:
         "citations": citations,
         "confidence": action.confidence,
         "refused": False,
+        "trace": list(trace),
+        "steps_used": steps_used,
     }
 
 
-def _default_model() -> AgentModel:
+def model_from_env() -> AgentModel:
     api_key = os.getenv("OPENAI_API_KEY", "").strip()
     model = os.getenv("AGENT_MODEL", "").strip()
     base_url = os.getenv("OPENAI_BASE_URL", "").strip() or None
@@ -247,26 +304,32 @@ def run_agent(
     if not question.strip():
         return _refusal("Refused: a non-empty research question is required.")
     if model is None:
-        model = _default_model()
+        model = model_from_env()
 
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": question},
     ]
     citation_registry: dict[str, dict] = {}
+    trace: list[dict] = []
 
-    for _ in range(max_steps):
+    for step in range(1, max_steps + 1):
         raw_action = model.complete(messages)
         try:
             action = _parse_action(raw_action)
         except AgentActionError as exc:
-            return _refusal(f"Refused: malformed model action: {exc}")
+            return _refusal(
+                f"Refused: malformed model action: {exc}",
+                trace=trace,
+                steps_used=step,
+            )
 
         messages.append({"role": "assistant", "content": raw_action})
         if isinstance(action, FinalAction):
-            return _finalize(action, citation_registry)
+            return _finalize(action, citation_registry, trace, step)
 
         observation = _dispatch_tool(action, tool_registry=tool_registry)
+        trace.append(_trace_entry(step, action, observation))
         _register_citations(observation, citation_registry)
         messages.append(
             {
@@ -275,4 +338,8 @@ def run_agent(
             }
         )
 
-    return _refusal(f"Refused: agent reached the maximum {max_steps} steps without an answer.")
+    return _refusal(
+        f"Refused: agent reached the maximum {max_steps} steps without an answer.",
+        trace=trace,
+        steps_used=max_steps,
+    )
