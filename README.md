@@ -62,18 +62,42 @@ Eval harness: retrieval · grounding · trajectories · recovery · refusal · l
 3. `run_event_study` — log abnormal returns and CAR around an event date + a
    **pre-event bootstrap CI**, leakage-checked.
 
-## Run
+## Run locally
 
 ```bash
-python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
+uvicorn app.main:app --reload
+# then: http://127.0.0.1:8000/docs
+```
+
+`/health`, `/ingest`, `/search`, `/documents`, and `/event-study` do not require model
+credentials. Only model-directed `/research` requires:
+
+```bash
 export OPENAI_API_KEY="your-key"
 export AGENT_MODEL="your-model-name"
 # Optional for an OpenAI-compatible provider:
 # export OPENAI_BASE_URL="https://provider.example/v1"
-uvicorn app.main:app --reload
-# then: http://127.0.0.1:8000/docs
 ```
+
+Chroma persists under `.chroma` by default. Set `CHROMA_DIR` before starting the server to use
+a different storage directory.
+
+## Run with Docker
+
+```bash
+docker build -t agent-quant-research .
+docker run --rm -p 8000:8000 \
+  -v agent-quant-chroma:/app/.chroma \
+  agent-quant-research
+```
+
+The named volume preserves ingested documents across containers. Add `-e OPENAI_API_KEY` and
+`-e AGENT_MODEL` to the `docker run` command only when testing `/research`; credentials are
+runtime inputs and are never copied into the image. The bundled sample path inside the
+container is `/app/sample.txt`.
 
 ## Local Smoke Test
 
@@ -175,8 +199,9 @@ not a statistically meaningful model benchmark, and it is deliberately excluded 
 
 `get_price_data(ticker, start, end)` is a thin tool wrapper. It first tries cached 1-minute
 bars from a local `spx-news-intraday` checkout, using `SPX_NEWS_INTRADAY_ROOT` if set or
-`~/spx-news-intraday` if present. If that loader is unavailable, it falls back to optional
-`yfinance` daily data. The returned payload is JSON-safe for the future agent loop:
+`~/spx-news-intraday` if present. That private source is optional and no code or data from it is
+included here. A clean public checkout falls back to the installed `yfinance==1.1.0` daily-data
+adapter. The returned payload is JSON-safe for the agent loop:
 `ticker`, `start`, `end`, `source`, `n_rows`, `columns`, and `rows`.
 Public tool calls retain at most 2,000 rows; the event-study implementation requests the
 full internal range so minute-bar truncation cannot discard its baseline or event window.
@@ -226,7 +251,14 @@ For the interview explanation and 10-minute self-quiz, see
 
 ```bash
 .venv/bin/python -m pytest -q
+.venv/bin/python -m app.eval_harness --output /tmp/eval-results.json
+diff -u eval/results.json /tmp/eval-results.json
 ```
+
+GitHub Actions runs these credential-free checks on pushes and pull requests, then builds the
+Docker image. The optional live model smoke test is excluded because provider behavior is
+nondeterministic and costs API calls. A successful image build proves packaging, not deployment
+to a cloud runtime.
 
 ## Build status
 - [x] Day 1–2: FastAPI skeleton + `/ingest` + Chroma + `search_docs` (citations + refusal)
@@ -236,7 +268,7 @@ For the interview explanation and 10-minute self-quiz, see
 - [x] Day 5 foundation: eval metric helpers + RAG refusal/citation regression tests
 - [x] Day 5 corpus eval: isolated fixtures + reproducible offline metrics above
 - [x] Day 6: orchestration traces + all-three-tool trajectory/recovery eval + capped live smoke
-- [ ] Day 6–7: Dockerize, polish, make public
+- [x] Day 7: public price fallback + non-root Docker image + credential-free CI + release docs
 
 ## Explicitly out of scope (known production path, deliberately not built)
 Live trading · buy/sell claims · private strategy logic · backtesting · risk metrics · Qdrant

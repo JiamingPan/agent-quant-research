@@ -304,3 +304,59 @@ an ordered multi-tool path, and recovery after an injected failure. Offline case
 contracts for free; a separate two-case live API smoke test measures actual model routing with a
 hard six-call ceiling. I would add a durable scheduler only when jobs become parallel,
 long-running, or resumable."
+
+---
+
+## Day 7 - Own the public release (10 minutes)
+
+### Trace the release boundary
+
+```text
+git push
+    -> GitHub Actions installs a clean Python 3.11 environment
+    -> unit and contract tests run without credentials or network market data
+    -> the offline eval is regenerated and compared with the checked-in result
+    -> Docker builds a non-root image
+    -> a user can run the same API with persistent Chroma storage
+```
+
+The image contains application code and public dependencies. It does not contain `.env` files,
+private data, the local Chroma database, tests, or credentials. `OPENAI_API_KEY` and
+`AGENT_MODEL` are provided only at runtime when `/research` is needed.
+
+The public price path uses `yfinance` as a convenient daily-data fallback. This makes the MVP
+runnable, but it is not a production market-data guarantee: availability, adjustments, latency,
+and vendor behavior are outside this service's control.
+
+### Five-question self-quiz
+
+Answer aloud before reading the expected points:
+
+1. Why does the container switch from root to `appuser`?
+2. Why must model credentials be runtime inputs instead of Docker build arguments or copied files?
+3. Why does CI run deterministic offline eval but not the live model-routing smoke test?
+4. Why is `yfinance` acceptable for the public MVP but not a market-data SLA?
+5. What does a successful Docker build prove, and what does it not prove?
+
+Expected points:
+
+1. Least privilege limits the damage from an application or dependency compromise; ownership of
+   `/app/.chroma` still permits required persistence.
+2. Build inputs and image layers can be cached or inspected. Runtime environment variables keep
+   secrets outside the artifact, though a production secret manager would be stronger.
+3. Offline fixtures are fast, free, reproducible, and exact enough to gate changes. Live model
+   routing varies by provider and costs API calls, so it is a separate bounded smoke test.
+4. It offers a simple public fallback, but the project does not control its uptime, semantics,
+   corrections, or data licensing. Production research needs a contracted, validated feed.
+5. It proves the repository can be packaged with its dependencies and startup command. It does
+   not prove cloud networking, scaling, authentication, monitoring, or operational readiness.
+
+### 60-second interview version
+
+"I finished the MVP as a reproducible public service rather than stopping at code that worked on
+my laptop. A clean checkout has a public daily-price fallback, credential-free tests, and a
+deterministic eval whose output is diffed in CI. The Docker image runs as a non-root user and
+keeps Chroma in a writable mounted volume; model credentials are runtime-only. CI also builds the
+image on every change. I separate those claims carefully: this proves packaging and core system
+contracts, while a real deployment would still need authentication, managed secrets, monitoring,
+scaling, and a production market-data agreement."
