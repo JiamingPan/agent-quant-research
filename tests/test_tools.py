@@ -95,6 +95,41 @@ def test_get_price_data_can_return_all_rows_for_internal_consumers(monkeypatch):
     assert out["truncated"] is False
 
 
+def test_normalize_bars_flattens_single_ticker_yfinance_columns():
+    frame = pd.DataFrame(
+        [[100.0, 101.0, 99.0, 100.5, 1000]],
+        index=pd.to_datetime(["2026-01-02"]),
+        columns=pd.MultiIndex.from_tuples(
+            [
+                ("Open", "SPY"),
+                ("High", "SPY"),
+                ("Low", "SPY"),
+                ("Close", "SPY"),
+                ("Volume", "SPY"),
+            ]
+        ),
+    )
+
+    normalized = tools._normalize_bars(frame)
+
+    assert normalized.columns.tolist() == ["open", "high", "low", "close", "volume"]
+    assert normalized.index.tz is not None
+    assert normalized.iloc[0]["close"] == 100.5
+
+
+def test_normalize_bars_rejects_duplicate_multi_ticker_fields():
+    frame = pd.DataFrame(
+        [[100.0, 200.0]],
+        index=pd.to_datetime(["2026-01-02"]),
+        columns=pd.MultiIndex.from_tuples(
+            [("Close", "SPY"), ("Close", "AAPL")]
+        ),
+    )
+
+    with pytest.raises(ValueError, match="duplicate OHLCV"):
+        tools._normalize_bars(frame)
+
+
 def test_run_event_study_returns_log_ar_car_and_bootstrap_ci(monkeypatch):
     def fake_prices(
         ticker: str,

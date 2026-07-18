@@ -8,7 +8,8 @@ the private `spx-news-intraday` repository.
 
 ## Public Price Fallback
 
-Add `yfinance==1.5.1` as a normal dependency. Keep the private cache loader as the first optional
+Add `yfinance==1.1.0` as a normal dependency. It is the newest release compatible with the
+project's local Python 3.9 environment and the Python 3.11 container target. Keep the private cache loader as the first optional
 source, but make the public fallback fully installed and documented. Normalize the MultiIndex
 columns returned by current single-ticker `yfinance.download` calls into the existing lowercase
 OHLCV contract. Reject ambiguous columns rather than silently selecting the wrong field.
@@ -65,7 +66,7 @@ scope.
 ## Acceptance Criteria
 
 - A MultiIndex yfinance fixture normalizes to lowercase OHLCV columns.
-- `yfinance==1.5.1` installs in the project environment.
+- `yfinance==1.1.0` installs in the project environment.
 - All tests pass without network or credentials.
 - Offline evaluation is byte-identical across reruns.
 - CI syntax parses and the workflow includes tests, eval comparison, and Docker build.

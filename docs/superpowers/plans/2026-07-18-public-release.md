@@ -6,7 +6,7 @@
 
 **Architecture:** Preserve the current application and three-tool agent. Harden the public yfinance adapter at the normalization boundary, package the API in a non-root Python 3.11 image, and make GitHub Actions verify tests, deterministic eval output, and the Docker build.
 
-**Tech Stack:** Python 3.11 release target, FastAPI, Pydantic, Chroma, pandas, yfinance 1.5.1, pytest, Docker, GitHub Actions.
+**Tech Stack:** Python 3.11 release target, FastAPI, Pydantic, Chroma, pandas, yfinance 1.1.0, pytest, Docker, GitHub Actions.
 
 ## Global Constraints
 
@@ -28,7 +28,7 @@
 **Interfaces:**
 - Preserves: `_normalize_bars(frame: pd.DataFrame) -> pd.DataFrame`.
 - Adds: support for current yfinance single-ticker MultiIndex columns.
-- Adds: runtime dependency `yfinance==1.5.1`.
+- Adds: runtime dependency `yfinance==1.1.0`, the newest release compatible with the project's local Python 3.9 environment.
 
 - [ ] **Step 1: Write the failing MultiIndex normalization test**
 
@@ -83,10 +83,10 @@ Reject duplicated flattened fields with `ValueError("price frame has duplicate O
 
 - [ ] **Step 4: Add and install the public dependency**
 
-Append `yfinance==1.5.1` to `requirements.txt`, then run:
+Append `yfinance==1.1.0` to `requirements.txt`, then run:
 
 ```bash
-.venv/bin/python -m pip install yfinance==1.5.1
+.venv/bin/python -m pip install yfinance==1.1.0
 ```
 
 - [ ] **Step 5: Run focused and full tests**

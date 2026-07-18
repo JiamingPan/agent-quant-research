@@ -217,7 +217,23 @@ def _load_bars_from_yfinance(
 
 def _normalize_bars(frame: pd.DataFrame) -> pd.DataFrame:
     frame = frame.copy()
-    frame.columns = [str(c).lower() for c in frame.columns]
+    known_fields = {"open", "high", "low", "close", "volume"}
+    if isinstance(frame.columns, pd.MultiIndex):
+        flattened: list[str] = []
+        for column in frame.columns:
+            matches = [
+                str(part).lower()
+                for part in column
+                if str(part).lower() in known_fields
+            ]
+            if len(matches) != 1:
+                raise ValueError(f"ambiguous price column: {column!r}")
+            flattened.append(matches[0])
+        frame.columns = flattened
+    else:
+        frame.columns = [str(column).lower() for column in frame.columns]
+    if frame.columns.duplicated().any():
+        raise ValueError("price frame has duplicate OHLCV columns")
     if not isinstance(frame.index, pd.DatetimeIndex):
         if "ts" not in frame.columns:
             raise ValueError("price frame needs a DatetimeIndex or ts column")
